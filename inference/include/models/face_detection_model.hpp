@@ -6,6 +6,7 @@
 
 #include <opencv2/core/mat.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -22,6 +23,23 @@ struct FaceDetectionPreprocessInfo {
     int resizedHeight = 0;
 
     float detScale = 0.0F;
+};
+
+struct FaceDetectionProposal {
+    float score = 0.0F;
+
+    // Model-input coordinate system:
+    //
+    // [x1, y1, x2, y2]
+    std::array<float, 4> bbox{};
+
+    // 5 keypoints:
+    //
+    // [x0, y0,
+    //  x1, y1,
+    //  ...
+    //  x4, y4]
+    std::array<float, 10> landmarks{};
 };
 
 class FaceDetectionModel {
@@ -52,6 +70,11 @@ public:
 
     bool infer();
 
+    bool decodeStride8(
+        std::vector<FaceDetectionProposal>& proposals,
+        float scoreThreshold = 0.5F
+    );
+
     bool ready() const noexcept;
 
     const FaceDetectionPreprocessInfo&
@@ -77,6 +100,11 @@ private:
 
     bool validateScrfdInput();
 
+    const inference::QnnTensorBuffer*
+    outputBufferByName(
+        const char* name
+    ) const noexcept;
+
     static Qnn_DataType_t dataType(
         const Qnn_Tensor_t& tensor
     ) noexcept;
@@ -98,6 +126,8 @@ private:
     static constexpr int INPUT_WIDTH = 640;
     static constexpr int INPUT_HEIGHT = 640;
     static constexpr int INPUT_CHANNELS = 3;
+
+    static constexpr int NUM_ANCHORS = 2;
 
     inference::QnnModel model_;
 

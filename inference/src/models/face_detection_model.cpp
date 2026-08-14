@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <sstream>
 
 namespace models {
@@ -106,10 +107,6 @@ bool FaceDetectionModel::initialize(
         return false;
     }
 
-    // =====================================================
-    // Validate expected SCRFD graph contract
-    // =====================================================
-
     if (graph->numInputTensors != 1) {
 
         std::ostringstream oss;
@@ -152,7 +149,7 @@ bool FaceDetectionModel::initialize(
     }
 
     // =====================================================
-    // Validate SCRFD input metadata
+    // Validate SCRFD input
     // =====================================================
 
     if (!validateScrfdInput()) {
@@ -163,11 +160,7 @@ bool FaceDetectionModel::initialize(
     }
 
     // =====================================================
-    // Build persistent contiguous Qnn_Tensor_t arrays
-    //
-    // This happens once during initialization.
-    //
-    // infer() will reuse these arrays every frame.
+    // Build persistent graphExecute tensor arrays
     // =====================================================
 
     if (!buildExecutionTensorArrays()) {
@@ -209,7 +202,7 @@ bool FaceDetectionModel::allocateRuntimeBuffers()
     );
 
     // =====================================================
-    // Inputs
+    // Input
     // =====================================================
 
     for (uint32_t i = 0;
@@ -294,14 +287,6 @@ bool FaceDetectionModel::buildExecutionTensorArrays()
         outputBuffers_.size()
     );
 
-    // =====================================================
-    // Each copied Qnn_Tensor_t keeps clientBuf.data pointing
-    // to memory owned by the corresponding QnnTensorBuffer.
-    //
-    // QnnTensorBuffer objects themselves are heap-allocated
-    // and remain stable behind unique_ptr.
-    // =====================================================
-
     for (const auto& buffer :
          inputBuffers_) {
 
@@ -338,20 +323,18 @@ bool FaceDetectionModel::buildExecutionTensorArrays()
         );
     }
 
-    if (executionInputTensors_.size() !=
-        inputBuffers_.size()) {
+    if (executionInputTensors_.size() != 1) {
 
         lastError_ =
-            "Execution input tensor count mismatch";
+            "SCRFD execution input count is invalid";
 
         return false;
     }
 
-    if (executionOutputTensors_.size() !=
-        outputBuffers_.size()) {
+    if (executionOutputTensors_.size() != 9) {
 
         lastError_ =
-            "Execution output tensor count mismatch";
+            "SCRFD execution output count is invalid";
 
         return false;
     }
@@ -372,10 +355,6 @@ bool FaceDetectionModel::validateScrfdInput()
     const Qnn_Tensor_t& tensor =
         inputBuffers_[0]->tensor();
 
-    // =====================================================
-    // Datatype
-    // =====================================================
-
     if (dataType(
             tensor
         ) !=
@@ -387,10 +366,6 @@ bool FaceDetectionModel::validateScrfdInput()
 
         return false;
     }
-
-    // =====================================================
-    // Shape [1,640,640,3]
-    // =====================================================
 
     if (rank(
             tensor
@@ -437,10 +412,6 @@ bool FaceDetectionModel::validateScrfdInput()
 
         return false;
     }
-
-    // =====================================================
-    // Quantization
-    // =====================================================
 
     const Qnn_QuantizeParams_t* params =
         quantization(
@@ -526,10 +497,7 @@ bool FaceDetectionModel::preprocess(
     }
 
     // =====================================================
-    // Same resize logic as the working Python preprocess:
-    //
-    // keep aspect ratio
-    // place resized image at top-left
+    // Aspect-ratio preserving resize
     // =====================================================
 
     const double imageRatio =
@@ -641,7 +609,7 @@ bool FaceDetectionModel::preprocess(
     );
 
     // =====================================================
-    // OpenCV BGR -> RGB
+    // BGR -> RGB
     // =====================================================
 
     cv::Mat rgb;
@@ -653,7 +621,7 @@ bool FaceDetectionModel::preprocess(
     );
 
     // =====================================================
-    // QNN input metadata
+    // QNN input quantization
     // =====================================================
 
     inference::QnnTensorBuffer&
@@ -695,14 +663,6 @@ bool FaceDetectionModel::preprocess(
 
         return false;
     }
-
-    // =====================================================
-    // Python reference:
-    //
-    // (rgb.astype(float32) - 127.5) / 128.0
-    //
-    // Then convert normalized float to QNN UFIXED_POINT_16.
-    // =====================================================
 
     uint64_t destinationIndex = 0;
 
@@ -767,10 +727,6 @@ bool FaceDetectionModel::preprocess(
         return false;
     }
 
-    // =====================================================
-    // Save values required later by SCRFD postprocessing.
-    // =====================================================
-
     preprocessInfo_.originalWidth =
         originalWidth;
 
@@ -801,22 +757,6 @@ bool FaceDetectionModel::infer()
         return false;
     }
 
-    if (executionInputTensors_.size() != 1) {
-
-        lastError_ =
-            "SCRFD execution input count is invalid";
-
-        return false;
-    }
-
-    if (executionOutputTensors_.size() != 9) {
-
-        lastError_ =
-            "SCRFD execution output count is invalid";
-
-        return false;
-    }
-
     if (!model_.executeGraph(
             0,
 
@@ -843,11 +783,528 @@ bool FaceDetectionModel::infer()
     return true;
 }
 
+bool FaceDetectionModel::decodeStride8(
+    std::vector<FaceDetectionProposal>& proposals,
+    float scoreThreshold
+)
+{
+    proposals.clear();
+
+    if (!ready()) {
+
+        lastError_ =
+            "FaceDetectionModel is not ready";
+
+        return false;
+    }
+
+    if (!std::isfinite(
+            scoreThreshold
+        )) {
+
+        lastError_ =
+            "Score threshold is not finite";
+
+        return false;
+    }
+
+    // =====================================================
+    // Find model outputs by NAME, not output index.
+    //
+    // This prevents the decoder from depending on the
+    // generated model's output ordering.
+    // =====================================================
+
+    const inference::QnnTensorBuffer*
+        scoreBuffer =
+            outputBufferByName(
+                "score_8"
+            );
+
+    const inference::QnnTensorBuffer*
+        bboxBuffer =
+            outputBufferByName(
+                "bbox_8"
+            );
+
+    const inference::QnnTensorBuffer*
+        kpsBuffer =
+            outputBufferByName(
+                "kps_8"
+            );
+
+    if (scoreBuffer == nullptr ||
+        bboxBuffer == nullptr ||
+        kpsBuffer == nullptr) {
+
+        lastError_ =
+            "SCRFD stride-8 output tensors are missing";
+
+        return false;
+    }
+
+    // =====================================================
+    // Native runtime type expected by this generated model.
+    // =====================================================
+
+    if (dataType(
+            scoreBuffer->tensor()
+        ) !=
+            QNN_DATATYPE_UFIXED_POINT_16 ||
+        dataType(
+            bboxBuffer->tensor()
+        ) !=
+            QNN_DATATYPE_UFIXED_POINT_16 ||
+        dataType(
+            kpsBuffer->tensor()
+        ) !=
+            QNN_DATATYPE_UFIXED_POINT_16) {
+
+        lastError_ =
+            "SCRFD stride-8 outputs must be "
+            "UFIXED_POINT_16";
+
+        return false;
+    }
+
+    // =====================================================
+    // 640 / 8 = 80
+    //
+    // 80 * 80 * 2 anchors
+    // = 12800 candidates
+    // =====================================================
+
+    constexpr int STRIDE = 8;
+
+    constexpr uint64_t GRID_WIDTH =
+        INPUT_WIDTH
+        /
+        STRIDE;
+
+    constexpr uint64_t GRID_HEIGHT =
+        INPUT_HEIGHT
+        /
+        STRIDE;
+
+    constexpr uint64_t CANDIDATE_COUNT =
+        GRID_WIDTH
+        *
+        GRID_HEIGHT
+        *
+        NUM_ANCHORS;
+
+    if (scoreBuffer->elementCount() !=
+        CANDIDATE_COUNT) {
+
+        std::ostringstream oss;
+
+        oss
+            << "score_8 element count mismatch. expected="
+            << CANDIDATE_COUNT
+            << ", actual="
+            << scoreBuffer->elementCount();
+
+        lastError_ = oss.str();
+
+        return false;
+    }
+
+    if (bboxBuffer->elementCount() !=
+        CANDIDATE_COUNT * 4) {
+
+        std::ostringstream oss;
+
+        oss
+            << "bbox_8 element count mismatch. expected="
+            << CANDIDATE_COUNT * 4
+            << ", actual="
+            << bboxBuffer->elementCount();
+
+        lastError_ = oss.str();
+
+        return false;
+    }
+
+    if (kpsBuffer->elementCount() !=
+        CANDIDATE_COUNT * 10) {
+
+        std::ostringstream oss;
+
+        oss
+            << "kps_8 element count mismatch. expected="
+            << CANDIDATE_COUNT * 10
+            << ", actual="
+            << kpsBuffer->elementCount();
+
+        lastError_ = oss.str();
+
+        return false;
+    }
+
+    // =====================================================
+    // Quantization metadata
+    // =====================================================
+
+    const Qnn_QuantizeParams_t*
+        scoreQuant =
+            quantization(
+                scoreBuffer->tensor()
+            );
+
+    const Qnn_QuantizeParams_t*
+        bboxQuant =
+            quantization(
+                bboxBuffer->tensor()
+            );
+
+    const Qnn_QuantizeParams_t*
+        kpsQuant =
+            quantization(
+                kpsBuffer->tensor()
+            );
+
+    if (scoreQuant == nullptr ||
+        bboxQuant == nullptr ||
+        kpsQuant == nullptr) {
+
+        lastError_ =
+            "SCRFD stride-8 quantization metadata is missing";
+
+        return false;
+    }
+
+    if (scoreQuant->quantizationEncoding !=
+            QNN_QUANTIZATION_ENCODING_SCALE_OFFSET ||
+        bboxQuant->quantizationEncoding !=
+            QNN_QUANTIZATION_ENCODING_SCALE_OFFSET ||
+        kpsQuant->quantizationEncoding !=
+            QNN_QUANTIZATION_ENCODING_SCALE_OFFSET) {
+
+        lastError_ =
+            "SCRFD stride-8 outputs must use "
+            "SCALE_OFFSET quantization";
+
+        return false;
+    }
+
+    // =====================================================
+    // Native buffers
+    // =====================================================
+
+    const auto* scoreRaw =
+        static_cast<const uint16_t*>(
+            scoreBuffer->data()
+        );
+
+    const auto* bboxRaw =
+        static_cast<const uint16_t*>(
+            bboxBuffer->data()
+        );
+
+    const auto* kpsRaw =
+        static_cast<const uint16_t*>(
+            kpsBuffer->data()
+        );
+
+    if (scoreRaw == nullptr ||
+        bboxRaw == nullptr ||
+        kpsRaw == nullptr) {
+
+        lastError_ =
+            "SCRFD stride-8 runtime buffer is null";
+
+        return false;
+    }
+
+    const float scoreScale =
+        scoreQuant
+            ->scaleOffsetEncoding
+            .scale;
+
+    const int32_t scoreOffset =
+        scoreQuant
+            ->scaleOffsetEncoding
+            .offset;
+
+    const float bboxScale =
+        bboxQuant
+            ->scaleOffsetEncoding
+            .scale;
+
+    const int32_t bboxOffset =
+        bboxQuant
+            ->scaleOffsetEncoding
+            .offset;
+
+    const float kpsScale =
+        kpsQuant
+            ->scaleOffsetEncoding
+            .scale;
+
+    const int32_t kpsOffset =
+        kpsQuant
+            ->scaleOffsetEncoding
+            .offset;
+
+    // Avoid repeated vector reallocation when many
+    // proposals pass threshold.
+    proposals.reserve(
+        CANDIDATE_COUNT
+    );
+
+    // =====================================================
+    // Python equivalent:
+    //
+    // centers:
+    //   yy, xx = np.mgrid[0:h, 0:w]
+    //   centers = [xx, yy] * stride
+    //   centers = repeat(centers, 2)
+    //
+    // candidate:
+    //
+    // gridIndex = candidateIndex / 2
+    // =====================================================
+
+    for (uint64_t candidateIndex = 0;
+         candidateIndex < CANDIDATE_COUNT;
+         ++candidateIndex) {
+
+        // -------------------------------------------------
+        // Score first.
+        //
+        // Candidates below threshold never need bbox/kps
+        // dequantization.
+        // -------------------------------------------------
+
+        const float score =
+            inference::dequantizeScaleOffset(
+                scoreRaw[
+                    candidateIndex
+                ],
+                scoreScale,
+                scoreOffset
+            );
+
+        if (score <
+            scoreThreshold) {
+
+            continue;
+        }
+
+        const uint64_t gridIndex =
+            candidateIndex
+            /
+            NUM_ANCHORS;
+
+        const uint64_t gridX =
+            gridIndex
+            %
+            GRID_WIDTH;
+
+        const uint64_t gridY =
+            gridIndex
+            /
+            GRID_WIDTH;
+
+        const float centerX =
+            static_cast<float>(
+                gridX * STRIDE
+            );
+
+        const float centerY =
+            static_cast<float>(
+                gridY * STRIDE
+            );
+
+        // -------------------------------------------------
+        // bbox output:
+        //
+        // [left, top, right, bottom]
+        //
+        // Python:
+        //
+        // bbox = bbox * stride
+        //
+        // x1 = cx - left
+        // y1 = cy - top
+        // x2 = cx + right
+        // y2 = cy + bottom
+        // -------------------------------------------------
+
+        const uint64_t bboxBase =
+            candidateIndex * 4;
+
+        const float left =
+            inference::dequantizeScaleOffset(
+                bboxRaw[
+                    bboxBase + 0
+                ],
+                bboxScale,
+                bboxOffset
+            )
+            *
+            STRIDE;
+
+        const float top =
+            inference::dequantizeScaleOffset(
+                bboxRaw[
+                    bboxBase + 1
+                ],
+                bboxScale,
+                bboxOffset
+            )
+            *
+            STRIDE;
+
+        const float right =
+            inference::dequantizeScaleOffset(
+                bboxRaw[
+                    bboxBase + 2
+                ],
+                bboxScale,
+                bboxOffset
+            )
+            *
+            STRIDE;
+
+        const float bottom =
+            inference::dequantizeScaleOffset(
+                bboxRaw[
+                    bboxBase + 3
+                ],
+                bboxScale,
+                bboxOffset
+            )
+            *
+            STRIDE;
+
+        FaceDetectionProposal proposal;
+
+        proposal.score =
+            score;
+
+        proposal.bbox[0] =
+            centerX
+            -
+            left;
+
+        proposal.bbox[1] =
+            centerY
+            -
+            top;
+
+        proposal.bbox[2] =
+            centerX
+            +
+            right;
+
+        proposal.bbox[3] =
+            centerY
+            +
+            bottom;
+
+        // -------------------------------------------------
+        // Keypoints
+        //
+        // Python:
+        //
+        // kps = kps * stride
+        //
+        // point.x = center.x + kps_x
+        // point.y = center.y + kps_y
+        // -------------------------------------------------
+
+        const uint64_t kpsBase =
+            candidateIndex * 10;
+
+        for (uint64_t pointIndex = 0;
+             pointIndex < 5;
+             ++pointIndex) {
+
+            const uint64_t xIndex =
+                kpsBase
+                +
+                pointIndex * 2;
+
+            const uint64_t yIndex =
+                xIndex + 1;
+
+            const float relativeX =
+                inference::dequantizeScaleOffset(
+                    kpsRaw[
+                        xIndex
+                    ],
+                    kpsScale,
+                    kpsOffset
+                )
+                *
+                STRIDE;
+
+            const float relativeY =
+                inference::dequantizeScaleOffset(
+                    kpsRaw[
+                        yIndex
+                    ],
+                    kpsScale,
+                    kpsOffset
+                )
+                *
+                STRIDE;
+
+            proposal.landmarks[
+                pointIndex * 2
+            ] =
+                centerX
+                +
+                relativeX;
+
+            proposal.landmarks[
+                pointIndex * 2 + 1
+            ] =
+                centerY
+                +
+                relativeY;
+        }
+
+        proposals.push_back(
+            proposal
+        );
+    }
+
+    lastError_.clear();
+
+    return true;
+}
+
+const inference::QnnTensorBuffer*
+FaceDetectionModel::outputBufferByName(
+    const char* name
+) const noexcept
+{
+    if (name == nullptr) {
+        return nullptr;
+    }
+
+    for (const auto& buffer :
+         outputBuffers_) {
+
+        if (buffer == nullptr) {
+            continue;
+        }
+
+        if (buffer->name() ==
+            name) {
+
+            return
+                buffer.get();
+        }
+    }
+
+    return nullptr;
+}
+
 void FaceDetectionModel::shutdown()
 {
-    // Tensor copies contain pointers to QnnTensorBuffer-owned
-    // memory, therefore clear execution views first.
-
     executionInputTensors_.clear();
 
     executionOutputTensors_.clear();
