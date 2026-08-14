@@ -45,7 +45,10 @@ target_include_directories(
     PUBLIC
 
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+
     ${QNN_SDK_ROOT}/include/QNN
+
+    ${QNN_SDK_ROOT}/examples/QNN/SampleApp/SampleApp/src/WrapperUtils
 )
 
 target_link_libraries(
@@ -112,7 +115,7 @@ target_link_libraries(
 
 
 # ==========================================================
-# QNN model library test
+# QNN model test
 # ==========================================================
 
 add_executable(

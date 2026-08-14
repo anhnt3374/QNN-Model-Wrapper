@@ -4,8 +4,10 @@
 #include "inference/qnn_context.hpp"
 #include "inference/shared_library.hpp"
 
-#include <QnnContext.h>
+#include <QnnLog.h>
+#include <QnnWrapperUtils.hpp>
 
+#include <cstdint>
 #include <string>
 
 namespace inference {
@@ -25,6 +27,8 @@ public:
         const std::string& modelPath
     );
 
+    bool composeGraphs();
+
     void shutdown();
 
     bool ready() const noexcept;
@@ -33,6 +37,10 @@ public:
 
     bool symbolsReady() const noexcept;
 
+    bool graphsReady() const noexcept;
+
+    uint32_t graphCount() const noexcept;
+
     Qnn_ContextHandle_t contextHandle() const noexcept;
 
     const std::string& modelPath() const noexcept;
@@ -40,13 +48,42 @@ public:
     const std::string& lastError() const noexcept;
 
 private:
+    using ComposeGraphsFn =
+        qnn_wrapper_api::ModelError_t (*)(
+            Qnn_BackendHandle_t,
+            QNN_INTERFACE_VER_TYPE,
+            Qnn_ContextHandle_t,
+            const qnn_wrapper_api::GraphConfigInfo_t**,
+            const uint32_t,
+            qnn_wrapper_api::GraphInfo_t***,
+            uint32_t*,
+            bool,
+            QnnLog_Callback_t,
+            QnnLog_Level_t
+        );
+
+    using FreeGraphsInfoFn =
+        qnn_wrapper_api::ModelError_t (*)(
+            qnn_wrapper_api::GraphInfo_t***,
+            uint32_t
+        );
+
+    void releaseGraphs();
+
+private:
+    QnnBackend& backend_;
+
     QnnContext context_;
 
     SharedLibrary modelLibrary_;
 
-    void* composeGraphsSymbol_ = nullptr;
+    ComposeGraphsFn composeGraphsFn_ = nullptr;
 
-    void* freeGraphsInfoSymbol_ = nullptr;
+    FreeGraphsInfoFn freeGraphsInfoFn_ = nullptr;
+
+    qnn_wrapper_api::GraphInfo_t** graphsInfo_ = nullptr;
+
+    uint32_t graphCount_ = 0;
 
     std::string modelPath_;
 

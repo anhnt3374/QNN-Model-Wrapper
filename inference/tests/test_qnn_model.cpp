@@ -129,7 +129,7 @@ int main()
     inference::QnnModel model(backend);
 
     // -----------------------------------------------------
-    // 6. Load model library
+    // 6. Load model
     // -----------------------------------------------------
 
     if (!model.load(modelPath)) {
@@ -141,37 +141,6 @@ int main()
         return 1;
     }
 
-    if (!model.libraryReady()) {
-        std::cerr
-            << "[ERROR] model library is not ready\n";
-
-        return 1;
-    }
-
-    std::cout
-        << "[PASS] model .so loaded\n";
-
-    // -----------------------------------------------------
-    // 7. Verify exported QNN model symbols
-    // -----------------------------------------------------
-
-    if (!model.symbolsReady()) {
-        std::cerr
-            << "[ERROR] required model symbols are missing\n";
-
-        return 1;
-    }
-
-    std::cout
-        << "[PASS] QnnModel_composeGraphs found\n";
-
-    std::cout
-        << "[PASS] QnnModel_freeGraphsInfo found\n";
-
-    // -----------------------------------------------------
-    // 8. Verify complete model session
-    // -----------------------------------------------------
-
     if (!model.ready()) {
         std::cerr
             << "[ERROR] model is not ready\n";
@@ -180,17 +149,63 @@ int main()
     }
 
     std::cout
+        << "[PASS] model .so loaded\n";
+
+    std::cout
+        << "[PASS] required model symbols found\n";
+
+    std::cout
         << "[INFO] model context handle: "
         << model.contextHandle()
         << '\n';
 
-    std::cout
-        << "[INFO] model path: "
-        << model.modelPath()
-        << '\n';
+    // =====================================================
+    // 7. Compose graphs
+    // =====================================================
+
+    if (!model.composeGraphs()) {
+        std::cerr
+            << "[ERROR] composeGraphs: "
+            << model.lastError()
+            << '\n';
+
+        return 1;
+    }
+
+    if (!model.graphsReady()) {
+        std::cerr
+            << "[ERROR] graph metadata is not ready\n";
+
+        return 1;
+    }
 
     std::cout
-        << "[PASS] QnnModel test complete\n";
+        << "[PASS] QNN graphs composed\n";
+
+    // =====================================================
+    // 8. Inspect graph count
+    // =====================================================
+
+    const uint32_t graphCount =
+        model.graphCount();
+
+    std::cout
+        << "[INFO] graph count: "
+        << graphCount
+        << '\n';
+
+    if (graphCount == 0) {
+        std::cerr
+            << "[ERROR] model returned zero graphs\n";
+
+        return 1;
+    }
+
+    std::cout
+        << "[PASS] graph metadata available\n";
+
+    std::cout
+        << "[PASS] QnnModel compose test complete\n";
 
     return 0;
 }
