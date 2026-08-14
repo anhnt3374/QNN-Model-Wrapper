@@ -173,7 +173,7 @@ int main()
         << '\n';
 
     // =====================================================
-    // Backend runtime
+    // QNN backend
     // =====================================================
 
     inference::QnnBackend backend;
@@ -246,7 +246,7 @@ int main()
         << "[PASS] QNN device created\n";
 
     // =====================================================
-    // Model
+    // QNN model
     // =====================================================
 
     inference::QnnModel model(
@@ -268,6 +268,10 @@ int main()
     std::cout
         << "[PASS] model .so loaded\n";
 
+    // =====================================================
+    // Compose graph
+    // =====================================================
+
     if (!model.composeGraphs()) {
 
         std::cerr
@@ -287,7 +291,48 @@ int main()
         << '\n';
 
     // =====================================================
-    // For now SCRFD has exactly one graph.
+    // Finalize graph
+    // =====================================================
+
+    if (!model.finalizeGraphs()) {
+
+        std::cerr
+            << "[ERROR] finalizeGraphs: "
+            << model.lastError()
+            << '\n';
+
+        return 1;
+    }
+
+    if (!model.graphsFinalized()) {
+
+        std::cerr
+            << "[ERROR] graphs are not finalized\n";
+
+        return 1;
+    }
+
+    std::cout
+        << "[PASS] QNN graphs finalized\n";
+
+    for (uint32_t i = 0;
+         i < model.graphCount();
+         ++i) {
+
+        std::cout
+            << "[INFO] graph["
+            << i
+            << "] finalized: "
+            << (
+                model.graphFinalized(i)
+                    ? "yes"
+                    : "no"
+            )
+            << '\n';
+    }
+
+    // =====================================================
+    // Graph metadata
     // =====================================================
 
     const auto* graph =
@@ -323,7 +368,7 @@ int main()
         << '\n';
 
     // =====================================================
-    // Allocate runtime input tensors
+    // Input runtime buffers
     // =====================================================
 
     std::vector<TensorBufferPtr>
@@ -340,7 +385,7 @@ int main()
     }
 
     // =====================================================
-    // Allocate runtime output tensors
+    // Output runtime buffers
     // =====================================================
 
     std::vector<TensorBufferPtr>
@@ -394,6 +439,9 @@ int main()
 
     std::cout
         << "[PASS] QNN tensor buffers ready\n";
+
+    std::cout
+        << "[PASS] QNN model ready for execution\n";
 
     return 0;
 }

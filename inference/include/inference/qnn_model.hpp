@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace inference {
 
@@ -29,6 +30,8 @@ public:
 
     bool composeGraphs();
 
+    bool finalizeGraphs();
+
     void shutdown();
 
     bool ready() const noexcept;
@@ -38,6 +41,12 @@ public:
     bool symbolsReady() const noexcept;
 
     bool graphsReady() const noexcept;
+
+    bool graphsFinalized() const noexcept;
+
+    bool graphFinalized(
+        uint32_t index
+    ) const noexcept;
 
     uint32_t graphCount() const noexcept;
 
@@ -89,6 +98,8 @@ private:
     qnn_wrapper_api::GraphInfo_t** graphsInfo_ = nullptr;
 
     uint32_t graphCount_ = 0;
+
+    std::vector<uint8_t> graphFinalized_;
 
     std::string modelPath_;
 
