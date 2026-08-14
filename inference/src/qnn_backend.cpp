@@ -20,12 +20,12 @@ bool QnnBackend::loadLibrary(
     const std::string& backendPath
 )
 {
-    // Nếu object từng được sử dụng trước đó,
-    // giải phóng resource cũ trước khi load library mới.
     shutdown();
 
     if (!backendLibrary_.open(backendPath)) {
-        lastError_ = backendLibrary_.lastError();
+        lastError_ =
+            backendLibrary_.lastError();
+
         return false;
     }
 
@@ -227,8 +227,72 @@ bool QnnBackend::createBackend()
     return true;
 }
 
+bool QnnBackend::createDevice()
+{
+    if (!interfaceReady_) {
+        lastError_ =
+            "QNN interface is not selected";
+
+        return false;
+    }
+
+    if (backendHandle_ == nullptr) {
+        lastError_ =
+            "QNN backend is not created";
+
+        return false;
+    }
+
+    if (deviceHandle_ != nullptr) {
+        return true;
+    }
+
+    const Qnn_ErrorHandle_t result =
+        qnnInterface_.deviceCreate(
+            nullptr,
+            nullptr,
+            &deviceHandle_
+        );
+
+    if (result != QNN_DEVICE_NO_ERROR) {
+        std::ostringstream oss;
+
+        oss
+            << "deviceCreate failed. error="
+            << result;
+
+        lastError_ = oss.str();
+
+        deviceHandle_ = nullptr;
+
+        return false;
+    }
+
+    if (deviceHandle_ == nullptr) {
+        lastError_ =
+            "deviceCreate returned null handle";
+
+        return false;
+    }
+
+    lastError_.clear();
+
+    return true;
+}
+
 void QnnBackend::shutdown()
 {
+    // Device phải được free trước backend.
+    if (deviceHandle_ != nullptr &&
+        interfaceReady_) {
+
+        qnnInterface_.deviceFree(
+            deviceHandle_
+        );
+
+        deviceHandle_ = nullptr;
+    }
+
     if (backendHandle_ != nullptr &&
         interfaceReady_) {
 
@@ -265,10 +329,21 @@ bool QnnBackend::backendReady() const noexcept
     return backendHandle_ != nullptr;
 }
 
+bool QnnBackend::deviceReady() const noexcept
+{
+    return deviceHandle_ != nullptr;
+}
+
 Qnn_BackendHandle_t
 QnnBackend::backendHandle() const noexcept
 {
     return backendHandle_;
+}
+
+Qnn_DeviceHandle_t
+QnnBackend::deviceHandle() const noexcept
+{
+    return deviceHandle_;
 }
 
 QNN_INTERFACE_VER_TYPE&

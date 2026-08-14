@@ -22,9 +22,9 @@ int main()
 
     inference::QnnBackend backend;
 
-    // -----------------------------------------
+    // =====================================================
     // 1. Load libQnnHtp.so
-    // -----------------------------------------
+    // =====================================================
 
     if (!backend.loadLibrary(backendPath)) {
         std::cerr
@@ -38,9 +38,9 @@ int main()
     std::cout
         << "[PASS] libQnnHtp.so loaded\n";
 
-    // -----------------------------------------
-    // 2. Load QNN providers
-    // -----------------------------------------
+    // =====================================================
+    // 2. Load providers
+    // =====================================================
 
     if (!backend.loadProviders()) {
         std::cerr
@@ -59,9 +59,9 @@ int main()
         << backend.providerCount()
         << '\n';
 
-    // -----------------------------------------
-    // 3. Select compatible QNN interface
-    // -----------------------------------------
+    // =====================================================
+    // 3. Select QNN interface
+    // =====================================================
 
     if (!backend.selectInterface()) {
         std::cerr
@@ -82,9 +82,9 @@ int main()
     std::cout
         << "[PASS] QNN interface selected\n";
 
-    // -----------------------------------------
-    // 4. Create QNN backend
-    // -----------------------------------------
+    // =====================================================
+    // 4. Create backend
+    // =====================================================
 
     if (!backend.createBackend()) {
         std::cerr
@@ -108,6 +108,34 @@ int main()
     std::cout
         << "[INFO] backend handle: "
         << backend.backendHandle()
+        << '\n';
+
+    // =====================================================
+    // 5. Create device
+    // =====================================================
+
+    if (!backend.createDevice()) {
+        std::cerr
+            << "[ERROR] createDevice: "
+            << backend.lastError()
+            << '\n';
+
+        return 1;
+    }
+
+    if (!backend.deviceReady()) {
+        std::cerr
+            << "[ERROR] deviceReady() returned false\n";
+
+        return 1;
+    }
+
+    std::cout
+        << "[PASS] QNN device created\n";
+
+    std::cout
+        << "[INFO] device handle: "
+        << backend.deviceHandle()
         << '\n';
 
     std::cout
