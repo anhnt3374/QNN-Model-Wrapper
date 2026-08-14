@@ -6,6 +6,7 @@
 
 #include <opencv2/core/mat.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -49,6 +50,8 @@ public:
         const cv::Mat& bgrImage
     );
 
+    bool infer();
+
     bool ready() const noexcept;
 
     const FaceDetectionPreprocessInfo&
@@ -57,11 +60,20 @@ public:
     const inference::QnnTensorBuffer*
     inputBuffer() const noexcept;
 
+    std::size_t outputCount() const noexcept;
+
+    const inference::QnnTensorBuffer*
+    outputBuffer(
+        std::size_t index
+    ) const noexcept;
+
     const std::string&
     lastError() const noexcept;
 
 private:
     bool allocateRuntimeBuffers();
+
+    bool buildExecutionTensorArrays();
 
     bool validateScrfdInput();
 
@@ -100,6 +112,12 @@ private:
             inference::QnnTensorBuffer
         >
     > outputBuffers_;
+
+    std::vector<Qnn_Tensor_t>
+        executionInputTensors_;
+
+    std::vector<Qnn_Tensor_t>
+        executionOutputTensors_;
 
     FaceDetectionPreprocessInfo preprocessInfo_;
 

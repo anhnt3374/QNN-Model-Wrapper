@@ -47,7 +47,7 @@ bool FaceDetectionModel::initialize(
     }
 
     // =====================================================
-    // Compose
+    // Compose graph
     // =====================================================
 
     if (!model_.composeGraphs()) {
@@ -61,7 +61,6 @@ bool FaceDetectionModel::initialize(
         return false;
     }
 
-    // This SCRFD model is expected to contain one graph.
     if (model_.graphCount() != 1) {
 
         std::ostringstream oss;
@@ -78,7 +77,7 @@ bool FaceDetectionModel::initialize(
     }
 
     // =====================================================
-    // Finalize
+    // Finalize graph
     // =====================================================
 
     if (!model_.finalizeGraphs()) {
@@ -107,14 +106,10 @@ bool FaceDetectionModel::initialize(
         return false;
     }
 
-    // Current generated SCRFD model:
-    //
-    // 1 input
-    // 9 outputs
-    //
-    // score_8/16/32
-    // bbox_8/16/32
-    // kps_8/16/32
+    // =====================================================
+    // Validate expected SCRFD graph contract
+    // =====================================================
+
     if (graph->numInputTensors != 1) {
 
         std::ostringstream oss;
@@ -146,20 +141,37 @@ bool FaceDetectionModel::initialize(
     }
 
     // =====================================================
-    // Allocate persistent runtime buffers
+    // Allocate persistent I/O buffers
     // =====================================================
 
     if (!allocateRuntimeBuffers()) {
+
         shutdown();
 
         return false;
     }
 
     // =====================================================
-    // Validate exact SCRFD input contract
+    // Validate SCRFD input metadata
     // =====================================================
 
     if (!validateScrfdInput()) {
+
+        shutdown();
+
+        return false;
+    }
+
+    // =====================================================
+    // Build persistent contiguous Qnn_Tensor_t arrays
+    //
+    // This happens once during initialization.
+    //
+    // infer() will reuse these arrays every frame.
+    // =====================================================
+
+    if (!buildExecutionTensorArrays()) {
+
         shutdown();
 
         return false;
@@ -269,6 +281,84 @@ bool FaceDetectionModel::allocateRuntimeBuffers()
     return true;
 }
 
+bool FaceDetectionModel::buildExecutionTensorArrays()
+{
+    executionInputTensors_.clear();
+    executionOutputTensors_.clear();
+
+    executionInputTensors_.reserve(
+        inputBuffers_.size()
+    );
+
+    executionOutputTensors_.reserve(
+        outputBuffers_.size()
+    );
+
+    // =====================================================
+    // Each copied Qnn_Tensor_t keeps clientBuf.data pointing
+    // to memory owned by the corresponding QnnTensorBuffer.
+    //
+    // QnnTensorBuffer objects themselves are heap-allocated
+    // and remain stable behind unique_ptr.
+    // =====================================================
+
+    for (const auto& buffer :
+         inputBuffers_) {
+
+        if (buffer == nullptr ||
+            !buffer->ready()) {
+
+            lastError_ =
+                "Cannot build execution input tensors: "
+                "runtime buffer is not ready";
+
+            return false;
+        }
+
+        executionInputTensors_.push_back(
+            buffer->tensor()
+        );
+    }
+
+    for (const auto& buffer :
+         outputBuffers_) {
+
+        if (buffer == nullptr ||
+            !buffer->ready()) {
+
+            lastError_ =
+                "Cannot build execution output tensors: "
+                "runtime buffer is not ready";
+
+            return false;
+        }
+
+        executionOutputTensors_.push_back(
+            buffer->tensor()
+        );
+    }
+
+    if (executionInputTensors_.size() !=
+        inputBuffers_.size()) {
+
+        lastError_ =
+            "Execution input tensor count mismatch";
+
+        return false;
+    }
+
+    if (executionOutputTensors_.size() !=
+        outputBuffers_.size()) {
+
+        lastError_ =
+            "Execution output tensor count mismatch";
+
+        return false;
+    }
+
+    return true;
+}
+
 bool FaceDetectionModel::validateScrfdInput()
 {
     if (inputBuffers_.size() != 1) {
@@ -299,7 +389,7 @@ bool FaceDetectionModel::validateScrfdInput()
     }
 
     // =====================================================
-    // Shape
+    // Shape [1,640,640,3]
     // =====================================================
 
     if (rank(
@@ -436,7 +526,10 @@ bool FaceDetectionModel::preprocess(
     }
 
     // =====================================================
-    // Same aspect-ratio resize logic as preprocess.py
+    // Same resize logic as the working Python preprocess:
+    //
+    // keep aspect ratio
+    // place resized image at top-left
     // =====================================================
 
     const double imageRatio =
@@ -509,9 +602,6 @@ bool FaceDetectionModel::preprocess(
 
     // =====================================================
     // Resize
-    //
-    // cv::INTER_LINEAR is also OpenCV's normal default
-    // used by the Python preprocessing.
     // =====================================================
 
     cv::Mat resized;
@@ -530,11 +620,6 @@ bool FaceDetectionModel::preprocess(
 
     // =====================================================
     // Top-left letterbox
-    //
-    // Python:
-    //
-    // canvas = zeros(640, 640, 3)
-    // canvas[:new_h, :new_w] = resized
     // =====================================================
 
     cv::Mat canvas =
@@ -556,7 +641,7 @@ bool FaceDetectionModel::preprocess(
     );
 
     // =====================================================
-    // BGR -> RGB
+    // OpenCV BGR -> RGB
     // =====================================================
 
     cv::Mat rgb;
@@ -568,7 +653,7 @@ bool FaceDetectionModel::preprocess(
     );
 
     // =====================================================
-    // QNN input quantization metadata
+    // QNN input metadata
     // =====================================================
 
     inference::QnnTensorBuffer&
@@ -612,17 +697,11 @@ bool FaceDetectionModel::preprocess(
     }
 
     // =====================================================
-    // Python:
+    // Python reference:
     //
-    // input_tensor =
-    //     (rgb.astype(float32) - 127.5) / 128.0
+    // (rgb.astype(float32) - 127.5) / 128.0
     //
-    // Then C++ additionally quantizes float -> uint16
-    // according to QNN SCALE_OFFSET metadata.
-    //
-    // Layout remains NHWC because RGB pixels are stored:
-    //
-    // R G B R G B ...
+    // Then convert normalized float to QNN UFIXED_POINT_16.
     // =====================================================
 
     uint64_t destinationIndex = 0;
@@ -689,7 +768,7 @@ bool FaceDetectionModel::preprocess(
     }
 
     // =====================================================
-    // Keep information required by postprocess later.
+    // Save values required later by SCRFD postprocessing.
     // =====================================================
 
     preprocessInfo_.originalWidth =
@@ -712,8 +791,67 @@ bool FaceDetectionModel::preprocess(
     return true;
 }
 
+bool FaceDetectionModel::infer()
+{
+    if (!ready()) {
+
+        lastError_ =
+            "FaceDetectionModel is not ready for inference";
+
+        return false;
+    }
+
+    if (executionInputTensors_.size() != 1) {
+
+        lastError_ =
+            "SCRFD execution input count is invalid";
+
+        return false;
+    }
+
+    if (executionOutputTensors_.size() != 9) {
+
+        lastError_ =
+            "SCRFD execution output count is invalid";
+
+        return false;
+    }
+
+    if (!model_.executeGraph(
+            0,
+
+            executionInputTensors_.data(),
+            static_cast<uint32_t>(
+                executionInputTensors_.size()
+            ),
+
+            executionOutputTensors_.data(),
+            static_cast<uint32_t>(
+                executionOutputTensors_.size()
+            )
+        )) {
+
+        lastError_ =
+            "SCRFD graph execution failed: "
+            + model_.lastError();
+
+        return false;
+    }
+
+    lastError_.clear();
+
+    return true;
+}
+
 void FaceDetectionModel::shutdown()
 {
+    // Tensor copies contain pointers to QnnTensorBuffer-owned
+    // memory, therefore clear execution views first.
+
+    executionInputTensors_.clear();
+
+    executionOutputTensors_.clear();
+
     inputBuffers_.clear();
 
     outputBuffers_.clear();
@@ -730,7 +868,11 @@ bool FaceDetectionModel::ready() const noexcept
         &&
         inputBuffers_.size() == 1
         &&
-        outputBuffers_.size() == 9;
+        outputBuffers_.size() == 9
+        &&
+        executionInputTensors_.size() == 1
+        &&
+        executionOutputTensors_.size() == 9;
 }
 
 const FaceDetectionPreprocessInfo&
@@ -748,6 +890,27 @@ FaceDetectionModel::inputBuffer() const noexcept
 
     return
         inputBuffers_[0].get();
+}
+
+std::size_t
+FaceDetectionModel::outputCount() const noexcept
+{
+    return outputBuffers_.size();
+}
+
+const inference::QnnTensorBuffer*
+FaceDetectionModel::outputBuffer(
+    std::size_t index
+) const noexcept
+{
+    if (index >=
+        outputBuffers_.size()) {
+
+        return nullptr;
+    }
+
+    return
+        outputBuffers_[index].get();
 }
 
 const std::string&

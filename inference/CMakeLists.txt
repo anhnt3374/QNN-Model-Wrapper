@@ -28,9 +28,6 @@ endif()
 
 # ==========================================================
 # OpenCV
-#
-# Generic inference_runtime does NOT depend on OpenCV.
-# Only the model-specific FaceDetectionModel does.
 # ==========================================================
 
 find_package(
@@ -38,11 +35,12 @@ find_package(
     COMPONENTS
     core
     imgproc
+    imgcodecs
 )
 
 
 # ==========================================================
-# Generic inference runtime
+# Generic QNN inference runtime
 # ==========================================================
 
 add_library(
@@ -180,7 +178,7 @@ target_link_libraries(
 
 
 # ==========================================================
-# Quantization test
+# QNN quantization test
 # ==========================================================
 
 add_executable(
@@ -198,7 +196,7 @@ target_link_libraries(
 
 
 # ==========================================================
-# FaceDetectionModel preprocess test
+# FaceDetectionModel preprocess test - 5H.1
 # ==========================================================
 
 add_executable(
@@ -209,6 +207,24 @@ add_executable(
 
 target_link_libraries(
     test_face_detection_model
+    PRIVATE
+
+    face_detection_model
+)
+
+
+# ==========================================================
+# FaceDetectionModel real-image inference test - 5H.2
+# ==========================================================
+
+add_executable(
+    test_face_detection_inference
+
+    tests/test_face_detection_inference.cpp
+)
+
+target_link_libraries(
+    test_face_detection_inference
     PRIVATE
 
     face_detection_model
