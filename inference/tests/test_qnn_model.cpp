@@ -1,5 +1,6 @@
 #include "inference/qnn_backend.hpp"
 #include "inference/qnn_model.hpp"
+#include "inference/qnn_quantization.hpp"
 #include "inference/qnn_tensor_buffer.hpp"
 
 #include <QnnTypes.h>
@@ -8,6 +9,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -98,9 +100,6 @@ bool createTensorBuffers(
 
 // =========================================================
 // Build contiguous Qnn_Tensor_t arrays
-//
-// graphExecute expects contiguous arrays of Qnn_Tensor_t.
-// QnnTensorBuffer objects themselves are owned separately.
 // =========================================================
 
 std::vector<Qnn_Tensor_t>
@@ -127,7 +126,7 @@ buildTensorArray(
 }
 
 // =========================================================
-// Access tensor metadata
+// Generic tensor metadata access
 // =========================================================
 
 Qnn_DataType_t getDataType(
@@ -166,21 +165,7 @@ getQuantization(
 }
 
 // =========================================================
-// SCRFD test input
-//
-// Real zero:
-//
-// float = (q + offset) * scale
-//
-// 0 = q + offset
-//
-// q = -offset
-//
-// SCRFD input:
-// offset = -32768
-//
-// therefore:
-// q = 32768
+// SCRFD neutral input
 // =========================================================
 
 bool fillFaceDetectorTestInput(
@@ -190,12 +175,9 @@ bool fillFaceDetectorTestInput(
     const Qnn_Tensor_t& tensor =
         buffer.tensor();
 
-    const Qnn_DataType_t dataType =
-        getDataType(
+    if (getDataType(
             tensor
-        );
-
-    if (dataType !=
+        ) !=
         QNN_DATATYPE_UFIXED_POINT_16) {
 
         std::cerr
@@ -213,8 +195,8 @@ bool fillFaceDetectorTestInput(
     if (quantization == nullptr) {
 
         std::cerr
-            << "[ERROR] SCRFD input "
-            << "quantization metadata missing\n";
+            << "[ERROR] SCRFD input quantization "
+            << "metadata missing\n";
 
         return false;
     }
@@ -241,8 +223,8 @@ bool fillFaceDetectorTestInput(
             std::numeric_limits<uint16_t>::max()) {
 
         std::cerr
-            << "[ERROR] quantized zero is "
-            << "outside uint16 range: "
+            << "[ERROR] quantized zero outside "
+            << "uint16 range: "
             << quantizedZero
             << '\n';
 
@@ -281,10 +263,17 @@ bool fillFaceDetectorTestInput(
         << '\n';
 
     std::cout
-        << "       real zero scale: "
+        << "       scale: "
         << quantization
                ->scaleOffsetEncoding
                .scale
+        << '\n';
+
+    std::cout
+        << "       offset: "
+        << quantization
+               ->scaleOffsetEncoding
+               .offset
         << '\n';
 
     std::cout
@@ -296,7 +285,7 @@ bool fillFaceDetectorTestInput(
 }
 
 // =========================================================
-// Clear outputs before execution
+// Clear output memory before graphExecute
 // =========================================================
 
 void clearOutputBuffers(
@@ -319,36 +308,90 @@ void clearOutputBuffers(
 }
 
 // =========================================================
-// Print several raw uint16 output values
+// Print raw + dequantized output
 //
-// 5G.1 does NOT interpret detections yet.
+// 5G.2 scope:
+//
+// uint16_t
+//      ↓
+// scale-offset dequantization
+//      ↓
+// float
+//
+// No SCRFD bbox/keypoint decoding yet.
 // =========================================================
 
-void printRawOutputSample(
+bool printDequantizedOutputSample(
     const inference::QnnTensorBuffer& buffer,
     std::size_t maxValues = 8
 )
 {
-    if (buffer.data() == nullptr) {
-        return;
-    }
+    const Qnn_Tensor_t& tensor =
+        buffer.tensor();
 
     if (getDataType(
-            buffer.tensor()
+            tensor
         ) !=
         QNN_DATATYPE_UFIXED_POINT_16) {
 
-        std::cout
-            << "       raw sample: "
-            << "<unsupported datatype>\n";
+        std::cerr
+            << "[ERROR] "
+            << buffer.name()
+            << " is not UFIXED_POINT_16\n";
 
-        return;
+        return false;
     }
 
-    const auto* values =
+    const Qnn_QuantizeParams_t* quantization =
+        getQuantization(
+            tensor
+        );
+
+    if (quantization == nullptr) {
+
+        std::cerr
+            << "[ERROR] "
+            << buffer.name()
+            << " has no quantization metadata\n";
+
+        return false;
+    }
+
+    if (quantization->quantizationEncoding !=
+        QNN_QUANTIZATION_ENCODING_SCALE_OFFSET) {
+
+        std::cerr
+            << "[ERROR] "
+            << buffer.name()
+            << " does not use SCALE_OFFSET\n";
+
+        return false;
+    }
+
+    const auto* rawValues =
         static_cast<const uint16_t*>(
             buffer.data()
         );
+
+    if (rawValues == nullptr) {
+
+        std::cerr
+            << "[ERROR] "
+            << buffer.name()
+            << " data buffer is null\n";
+
+        return false;
+    }
+
+    const float scale =
+        quantization
+            ->scaleOffsetEncoding
+            .scale;
+
+    const int32_t offset =
+        quantization
+            ->scaleOffsetEncoding
+            .offset;
 
     const std::size_t count =
         std::min<std::size_t>(
@@ -358,8 +401,26 @@ void printRawOutputSample(
             )
         );
 
+    // -----------------------------------------------------
+    // Quantization metadata
+    // -----------------------------------------------------
+
     std::cout
-        << "       raw sample: [";
+        << "       scale: "
+        << scale
+        << '\n';
+
+    std::cout
+        << "       offset: "
+        << offset
+        << '\n';
+
+    // -----------------------------------------------------
+    // Raw uint16 values
+    // -----------------------------------------------------
+
+    std::cout
+        << "       raw: [";
 
     for (std::size_t i = 0;
          i < count;
@@ -370,15 +431,47 @@ void printRawOutputSample(
         }
 
         std::cout
-            << values[i];
+            << rawValues[i];
     }
 
     std::cout << "]\n";
-}
 
-// =========================================================
-// Main
-// =========================================================
+    // -----------------------------------------------------
+    // Dequantized float values
+    // -----------------------------------------------------
+
+    std::cout
+        << "       float: [";
+
+    std::cout
+        << std::fixed
+        << std::setprecision(6);
+
+    for (std::size_t i = 0;
+         i < count;
+         ++i) {
+
+        if (i > 0) {
+            std::cout << ", ";
+        }
+
+        const float value =
+            inference::dequantizeScaleOffset(
+                rawValues[i],
+                scale,
+                offset
+            );
+
+        std::cout
+            << value;
+    }
+
+    std::cout
+        << "]\n"
+        << std::defaultfloat;
+
+    return true;
+}
 
 } // namespace
 
@@ -517,7 +610,7 @@ int main()
         << "[PASS] SCRFD model loaded\n";
 
     // =====================================================
-    // Compose
+    // Compose graph
     // =====================================================
 
     if (!model.composeGraphs()) {
@@ -534,7 +627,7 @@ int main()
         << "[PASS] SCRFD graph composed\n";
 
     // =====================================================
-    // Finalize
+    // Finalize graph
     // =====================================================
 
     if (!model.finalizeGraphs()) {
@@ -551,7 +644,7 @@ int main()
         << "[PASS] SCRFD graph finalized\n";
 
     // =====================================================
-    // SCRFD uses graph 0
+    // SCRFD graph 0
     // =====================================================
 
     const auto* graph =
@@ -587,7 +680,7 @@ int main()
         << '\n';
 
     // =====================================================
-    // Allocate runtime buffers
+    // Allocate runtime tensor buffers
     // =====================================================
 
     std::vector<TensorBufferPtr>
@@ -620,7 +713,7 @@ int main()
         << "[PASS] SCRFD runtime buffers ready\n";
 
     // =====================================================
-    // SCRFD has exactly one input
+    // Validate SCRFD input count
     // =====================================================
 
     if (inputBuffers.size() != 1) {
@@ -634,7 +727,7 @@ int main()
     }
 
     // =====================================================
-    // Fill neutral quantized input
+    // Fill neutral input
     // =====================================================
 
     if (!fillFaceDetectorTestInput(
@@ -644,14 +737,16 @@ int main()
         return 1;
     }
 
-    // Explicitly clear outputs so we know graphExecute
-    // will be responsible for writing them.
+    // =====================================================
+    // Clear output memory
+    // =====================================================
+
     clearOutputBuffers(
         outputBuffers
     );
 
     // =====================================================
-    // Build contiguous tensor arrays
+    // Build contiguous Qnn_Tensor_t arrays
     // =====================================================
 
     std::vector<Qnn_Tensor_t>
@@ -699,13 +794,13 @@ int main()
         << "[PASS] SCRFD graphExecute succeeded\n";
 
     // =====================================================
-    // Print raw output samples
+    // 5G.2
     //
-    // No dequantization / decoding in 5G.1.
+    // Dequantize all SCRFD output samples
     // =====================================================
 
     std::cout
-        << "[INFO] raw SCRFD outputs:\n";
+        << "[INFO] dequantized SCRFD outputs:\n";
 
     for (std::size_t i = 0;
          i < outputBuffers.size();
@@ -718,13 +813,17 @@ int main()
             << outputBuffers[i]->name()
             << '\n';
 
-        printRawOutputSample(
-            *outputBuffers[i]
-        );
+        if (!printDequantizedOutputSample(
+                *outputBuffers[i]
+            )) {
+
+            return 1;
+        }
     }
 
     std::cout
-        << "[PASS] 5G.1 SCRFD execution test complete\n";
+        << "[PASS] 5G.2 SCRFD "
+        << "dequantization test complete\n";
 
     return 0;
 }

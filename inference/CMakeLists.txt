@@ -39,6 +39,7 @@ add_library(
     src/qnn_context.cpp
     src/qnn_model.cpp
     src/qnn_tensor_buffer.cpp
+    src/qnn_quantization.cpp
 )
 
 target_include_directories(
@@ -127,6 +128,24 @@ add_executable(
 
 target_link_libraries(
     test_qnn_model
+    PRIVATE
+
+    inference_runtime
+)
+
+
+# ==========================================================
+# QNN quantization test
+# ==========================================================
+
+add_executable(
+    test_qnn_quantization
+
+    tests/test_qnn_quantization.cpp
+)
+
+target_link_libraries(
+    test_qnn_quantization
     PRIVATE
 
     inference_runtime
