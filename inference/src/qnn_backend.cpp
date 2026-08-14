@@ -280,83 +280,10 @@ bool QnnBackend::createDevice()
     return true;
 }
 
-bool QnnBackend::createContext()
-{
-    if (!interfaceReady_) {
-        lastError_ =
-            "QNN interface is not selected";
-
-        return false;
-    }
-
-    if (backendHandle_ == nullptr) {
-        lastError_ =
-            "QNN backend is not created";
-
-        return false;
-    }
-
-    if (deviceHandle_ == nullptr) {
-        lastError_ =
-            "QNN device is not created";
-
-        return false;
-    }
-
-    if (contextHandle_ != nullptr) {
-        return true;
-    }
-
-    const Qnn_ErrorHandle_t result =
-        qnnInterface_.contextCreate(
-            backendHandle_,
-            deviceHandle_,
-            nullptr,
-            &contextHandle_
-        );
-
-    if (result != QNN_CONTEXT_NO_ERROR) {
-        std::ostringstream oss;
-
-        oss
-            << "contextCreate failed. error="
-            << result;
-
-        lastError_ = oss.str();
-
-        contextHandle_ = nullptr;
-
-        return false;
-    }
-
-    if (contextHandle_ == nullptr) {
-        lastError_ =
-            "contextCreate returned null handle";
-
-        return false;
-    }
-
-    lastError_.clear();
-
-    return true;
-}
-
 void QnnBackend::shutdown()
 {
-    // Destroy theo thứ tự ngược lại so với create:
-    //
-    // context -> device -> backend -> shared library
-
-    if (contextHandle_ != nullptr &&
-        interfaceReady_) {
-
-        qnnInterface_.contextFree(
-            contextHandle_,
-            nullptr
-        );
-
-        contextHandle_ = nullptr;
-    }
+    // Context không còn thuộc QnnBackend.
+    // QnnContext phải được hủy trước QnnBackend.
 
     if (deviceHandle_ != nullptr &&
         interfaceReady_) {
@@ -409,11 +336,6 @@ bool QnnBackend::deviceReady() const noexcept
     return deviceHandle_ != nullptr;
 }
 
-bool QnnBackend::contextReady() const noexcept
-{
-    return contextHandle_ != nullptr;
-}
-
 Qnn_BackendHandle_t
 QnnBackend::backendHandle() const noexcept
 {
@@ -424,12 +346,6 @@ Qnn_DeviceHandle_t
 QnnBackend::deviceHandle() const noexcept
 {
     return deviceHandle_;
-}
-
-Qnn_ContextHandle_t
-QnnBackend::contextHandle() const noexcept
-{
-    return contextHandle_;
 }
 
 QNN_INTERFACE_VER_TYPE&

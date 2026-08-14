@@ -4,12 +4,18 @@ project(inference_runtime LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+
+# ==========================================================
+# QNN SDK
+# ==========================================================
 
 set(
     QNN_SDK_ROOT
     ""
     CACHE PATH
-    "Path to Qualcomm QNN/QAIRT SDK"
+    "Path to Qualcomm QAIRT/QNN SDK"
 )
 
 if(NOT QNN_SDK_ROOT)
@@ -20,9 +26,9 @@ if(NOT QNN_SDK_ROOT)
 endif()
 
 
-# =========================
-# Runtime library
-# =========================
+# ==========================================================
+# Inference runtime
+# ==========================================================
 
 add_library(
     inference_runtime
@@ -30,6 +36,8 @@ add_library(
 
     src/shared_library.cpp
     src/qnn_backend.cpp
+    src/qnn_context.cpp
+    src/qnn_model.cpp
 )
 
 target_include_directories(
@@ -48,9 +56,9 @@ target_link_libraries(
 )
 
 
-# =========================
-# Test plugin
-# =========================
+# ==========================================================
+# SharedLibrary test plugin
+# ==========================================================
 
 add_library(
     test_plugin
@@ -60,20 +68,14 @@ add_library(
 )
 
 
-# =========================
+# ==========================================================
 # SharedLibrary test
-# =========================
+# ==========================================================
 
 add_executable(
     test_shared_library
 
     tests/test_shared_library.cpp
-)
-
-target_compile_definitions(
-    test_shared_library
-    PRIVATE
-    TEST_PLUGIN_PATH="$<TARGET_FILE:test_plugin>"
 )
 
 target_link_libraries(
@@ -83,13 +85,45 @@ target_link_libraries(
     inference_runtime
 )
 
+target_compile_definitions(
+    test_shared_library
+    PRIVATE
+
+    TEST_PLUGIN_PATH="$<TARGET_FILE:test_plugin>"
+)
+
+
+# ==========================================================
+# QNN backend/context test
+# ==========================================================
+
 add_executable(
     test_qnn_backend
+
     tests/test_qnn_backend.cpp
 )
 
 target_link_libraries(
     test_qnn_backend
     PRIVATE
+
+    inference_runtime
+)
+
+
+# ==========================================================
+# QNN model library test
+# ==========================================================
+
+add_executable(
+    test_qnn_model
+
+    tests/test_qnn_model.cpp
+)
+
+target_link_libraries(
+    test_qnn_model
+    PRIVATE
+
     inference_runtime
 )

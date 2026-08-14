@@ -1,4 +1,5 @@
 #include "inference/qnn_backend.hpp"
+#include "inference/qnn_context.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -39,7 +40,7 @@ int main()
         << "[PASS] libQnnHtp.so loaded\n";
 
     // =====================================================
-    // 2. Load QNN providers
+    // 2. Load providers
     // =====================================================
 
     if (!backend.loadProviders()) {
@@ -60,7 +61,7 @@ int main()
         << '\n';
 
     // =====================================================
-    // 3. Select QNN interface
+    // 3. Select interface
     // =====================================================
 
     if (!backend.selectInterface()) {
@@ -72,18 +73,11 @@ int main()
         return 1;
     }
 
-    if (!backend.interfaceReady()) {
-        std::cerr
-            << "[ERROR] interfaceReady() returned false\n";
-
-        return 1;
-    }
-
     std::cout
         << "[PASS] QNN interface selected\n";
 
     // =====================================================
-    // 4. Create QNN backend
+    // 4. Create backend
     // =====================================================
 
     if (!backend.createBackend()) {
@@ -91,13 +85,6 @@ int main()
             << "[ERROR] createBackend: "
             << backend.lastError()
             << '\n';
-
-        return 1;
-    }
-
-    if (!backend.backendReady()) {
-        std::cerr
-            << "[ERROR] backendReady() returned false\n";
 
         return 1;
     }
@@ -111,7 +98,7 @@ int main()
         << '\n';
 
     // =====================================================
-    // 5. Create QNN device
+    // 5. Create device
     // =====================================================
 
     if (!backend.createDevice()) {
@@ -119,13 +106,6 @@ int main()
             << "[ERROR] createDevice: "
             << backend.lastError()
             << '\n';
-
-        return 1;
-    }
-
-    if (!backend.deviceReady()) {
-        std::cerr
-            << "[ERROR] deviceReady() returned false\n";
 
         return 1;
     }
@@ -139,21 +119,23 @@ int main()
         << '\n';
 
     // =====================================================
-    // 6. Create QNN context
+    // 6. Create independent context
     // =====================================================
 
-    if (!backend.createContext()) {
+    inference::QnnContext context(backend);
+
+    if (!context.create()) {
         std::cerr
-            << "[ERROR] createContext: "
-            << backend.lastError()
+            << "[ERROR] context.create: "
+            << context.lastError()
             << '\n';
 
         return 1;
     }
 
-    if (!backend.contextReady()) {
+    if (!context.ready()) {
         std::cerr
-            << "[ERROR] contextReady() returned false\n";
+            << "[ERROR] context.ready() returned false\n";
 
         return 1;
     }
@@ -163,11 +145,11 @@ int main()
 
     std::cout
         << "[INFO] context handle: "
-        << backend.contextHandle()
+        << context.handle()
         << '\n';
 
     std::cout
-        << "[PASS] QnnBackend test complete\n";
+        << "[PASS] QnnBackend/QnnContext test complete\n";
 
     return 0;
 }
