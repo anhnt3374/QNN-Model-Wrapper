@@ -27,7 +27,22 @@ endif()
 
 
 # ==========================================================
-# Inference runtime
+# OpenCV
+#
+# Generic inference_runtime does NOT depend on OpenCV.
+# Only the model-specific FaceDetectionModel does.
+# ==========================================================
+
+find_package(
+    OpenCV REQUIRED
+    COMPONENTS
+    core
+    imgproc
+)
+
+
+# ==========================================================
+# Generic inference runtime
 # ==========================================================
 
 add_library(
@@ -58,6 +73,36 @@ target_link_libraries(
     PUBLIC
 
     dl
+)
+
+
+# ==========================================================
+# SCRFD FaceDetectionModel
+# ==========================================================
+
+add_library(
+    face_detection_model
+    STATIC
+
+    src/models/face_detection_model.cpp
+)
+
+target_include_directories(
+    face_detection_model
+    PUBLIC
+
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+
+    ${OpenCV_INCLUDE_DIRS}
+)
+
+target_link_libraries(
+    face_detection_model
+    PUBLIC
+
+    inference_runtime
+
+    ${OpenCV_LIBS}
 )
 
 
@@ -99,7 +144,7 @@ target_compile_definitions(
 
 
 # ==========================================================
-# QNN backend/context test
+# QNN backend test
 # ==========================================================
 
 add_executable(
@@ -117,7 +162,7 @@ target_link_libraries(
 
 
 # ==========================================================
-# QNN model test
+# Generic QNN model test
 # ==========================================================
 
 add_executable(
@@ -135,7 +180,7 @@ target_link_libraries(
 
 
 # ==========================================================
-# QNN quantization test
+# Quantization test
 # ==========================================================
 
 add_executable(
@@ -149,4 +194,22 @@ target_link_libraries(
     PRIVATE
 
     inference_runtime
+)
+
+
+# ==========================================================
+# FaceDetectionModel preprocess test
+# ==========================================================
+
+add_executable(
+    test_face_detection_model
+
+    tests/test_face_detection_model.cpp
+)
+
+target_link_libraries(
+    test_face_detection_model
+    PRIVATE
+
+    face_detection_model
 )
