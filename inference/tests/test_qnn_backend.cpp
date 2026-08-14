@@ -22,6 +22,10 @@ int main()
 
     inference::QnnBackend backend;
 
+    // -----------------------------------------
+    // 1. Load libQnnHtp.so
+    // -----------------------------------------
+
     if (!backend.loadLibrary(backendPath)) {
         std::cerr
             << "[ERROR] loadLibrary: "
@@ -33,6 +37,10 @@ int main()
 
     std::cout
         << "[PASS] libQnnHtp.so loaded\n";
+
+    // -----------------------------------------
+    // 2. Load QNN providers
+    // -----------------------------------------
 
     if (!backend.loadProviders()) {
         std::cerr
@@ -50,6 +58,60 @@ int main()
         << "[INFO] provider count: "
         << backend.providerCount()
         << '\n';
+
+    // -----------------------------------------
+    // 3. Select compatible QNN interface
+    // -----------------------------------------
+
+    if (!backend.selectInterface()) {
+        std::cerr
+            << "[ERROR] selectInterface: "
+            << backend.lastError()
+            << '\n';
+
+        return 1;
+    }
+
+    if (!backend.interfaceReady()) {
+        std::cerr
+            << "[ERROR] interfaceReady() returned false\n";
+
+        return 1;
+    }
+
+    std::cout
+        << "[PASS] QNN interface selected\n";
+
+    // -----------------------------------------
+    // 4. Create QNN backend
+    // -----------------------------------------
+
+    if (!backend.createBackend()) {
+        std::cerr
+            << "[ERROR] createBackend: "
+            << backend.lastError()
+            << '\n';
+
+        return 1;
+    }
+
+    if (!backend.backendReady()) {
+        std::cerr
+            << "[ERROR] backendReady() returned false\n";
+
+        return 1;
+    }
+
+    std::cout
+        << "[PASS] QNN backend created\n";
+
+    std::cout
+        << "[INFO] backend handle: "
+        << backend.backendHandle()
+        << '\n';
+
+    std::cout
+        << "[PASS] QnnBackend test complete\n";
 
     return 0;
 }
