@@ -28,12 +28,29 @@ struct FaceDetectionPreprocessInfo {
 struct FaceDetectionProposal {
     float score = 0.0F;
 
-    // Model-input coordinate system:
+    // Model input coordinate system:
     //
     // [x1, y1, x2, y2]
     std::array<float, 4> bbox{};
 
     // 5 keypoints:
+    //
+    // [x0, y0,
+    //  x1, y1,
+    //  ...
+    //  x4, y4]
+    std::array<float, 10> landmarks{};
+};
+
+struct FaceDetectionResult {
+    float score = 0.0F;
+
+    // Original image coordinate system.
+    //
+    // [x1, y1, x2, y2]
+    std::array<float, 4> bbox{};
+
+    // Original image coordinate system.
     //
     // [x0, y0,
     //  x1, y1,
@@ -70,21 +87,47 @@ public:
 
     bool infer();
 
-    // Kept for the 5H.3 stride-8 checkpoint.
     bool decodeStride8(
         std::vector<FaceDetectionProposal>& proposals,
         float scoreThreshold = 0.5F
     );
 
-    // 5H.4:
-    //
-    // decode stride 8 + 16 + 32,
-    // merge proposals,
-    // sort by confidence descending.
     bool decodeAll(
         std::vector<FaceDetectionProposal>& proposals,
         float scoreThreshold = 0.5F
     );
+
+    // =====================================================
+    // 5H.5 + 5H.6
+    //
+    // decode
+    //   ↓
+    // threshold
+    //   ↓
+    // NMS
+    //   ↓
+    // map to original image
+    // =====================================================
+
+    bool postprocess(
+        std::vector<FaceDetectionResult>& results,
+        float scoreThreshold = 0.5F,
+        float nmsThreshold = 0.4F
+    );
+
+    // Complete one-image inference API.
+    bool detect(
+        const cv::Mat& bgrImage,
+        std::vector<FaceDetectionResult>& results,
+        float scoreThreshold = 0.5F,
+        float nmsThreshold = 0.4F
+    );
+
+    // Draw detection results on a copy of the input image.
+    cv::Mat renderDetections(
+        const cv::Mat& bgrImage,
+        const std::vector<FaceDetectionResult>& results
+    ) const;
 
     bool ready() const noexcept;
 
@@ -119,6 +162,17 @@ private:
         float scoreThreshold,
         std::vector<FaceDetectionProposal>& proposals
     );
+
+    bool applyNms(
+        const std::vector<FaceDetectionProposal>& proposals,
+        std::vector<FaceDetectionProposal>& kept,
+        float nmsThreshold
+    );
+
+    static float calculateIoU(
+        const std::array<float, 4>& lhs,
+        const std::array<float, 4>& rhs
+    ) noexcept;
 
     const inference::QnnTensorBuffer*
     outputBufferByName(

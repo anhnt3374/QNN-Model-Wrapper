@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
 #include <sstream>
 
 namespace models {
@@ -772,13 +773,6 @@ bool FaceDetectionModel::decodeAll(
         return false;
     }
 
-    // Maximum possible number before threshold:
-    //
-    // stride 8  = 12800
-    // stride 16 = 3200
-    // stride 32 = 800
-    //
-    // total     = 16800
     proposals.reserve(
         16800
     );
@@ -819,9 +813,6 @@ bool FaceDetectionModel::decodeAll(
         return false;
     }
 
-    // Same ordering as Python:
-    //
-    // order = scores.argsort()[::-1]
     std::sort(
         proposals.begin(),
         proposals.end(),
@@ -829,7 +820,9 @@ bool FaceDetectionModel::decodeAll(
             const FaceDetectionProposal& lhs,
             const FaceDetectionProposal& rhs
         ) {
-            return lhs.score > rhs.score;
+            return
+                lhs.score >
+                rhs.score;
         }
     );
 
@@ -1084,11 +1077,17 @@ bool FaceDetectionModel::decodeLevel(
             ->scaleOffsetEncoding
             .offset;
 
-    if (!std::isfinite(scoreScale) ||
+    if (!std::isfinite(
+            scoreScale
+        ) ||
         scoreScale <= 0.0F ||
-        !std::isfinite(bboxScale) ||
+        !std::isfinite(
+            bboxScale
+        ) ||
         bboxScale <= 0.0F ||
-        !std::isfinite(kpsScale) ||
+        !std::isfinite(
+            kpsScale
+        ) ||
         kpsScale <= 0.0F) {
 
         std::ostringstream oss;
@@ -1138,10 +1137,6 @@ bool FaceDetectionModel::decodeLevel(
          candidateIndex < candidateCount;
          ++candidateIndex) {
 
-        // =================================================
-        // Score
-        // =================================================
-
         const float score =
             inference::dequantizeScaleOffset(
                 scoreRaw[
@@ -1156,15 +1151,6 @@ bool FaceDetectionModel::decodeLevel(
 
             continue;
         }
-
-        // =================================================
-        // Anchor center
-        //
-        // Python:
-        //
-        // centers = [xx, yy] * stride
-        // repeat each center twice.
-        // =================================================
 
         const uint64_t gridIndex =
             candidateIndex
@@ -1198,10 +1184,6 @@ bool FaceDetectionModel::decodeLevel(
             static_cast<float>(
                 stride
             );
-
-        // =================================================
-        // BBox
-        // =================================================
 
         const uint64_t bboxBase =
             candidateIndex * 4;
@@ -1283,10 +1265,6 @@ bool FaceDetectionModel::decodeLevel(
             +
             bottom;
 
-        // =================================================
-        // 5 keypoints
-        // =================================================
-
         const uint64_t kpsBase =
             candidateIndex * 10;
 
@@ -1349,6 +1327,565 @@ bool FaceDetectionModel::decodeLevel(
     }
 
     return true;
+}
+
+bool FaceDetectionModel::applyNms(
+    const std::vector<FaceDetectionProposal>& proposals,
+    std::vector<FaceDetectionProposal>& kept,
+    float nmsThreshold
+)
+{
+    kept.clear();
+
+    if (!std::isfinite(
+            nmsThreshold
+        ) ||
+        nmsThreshold < 0.0F ||
+        nmsThreshold > 1.0F) {
+
+        lastError_ =
+            "NMS threshold must be in [0, 1]";
+
+        return false;
+    }
+
+    if (proposals.empty()) {
+
+        lastError_.clear();
+
+        return true;
+    }
+
+    // decodeAll() already sorted proposals by
+    // descending confidence.
+    //
+    // This loop is equivalent to the Python NMS:
+    //
+    // order = scores.argsort()[::-1]
+    // take highest score
+    // remove boxes with IoU > threshold
+    // repeat
+
+    std::vector<uint8_t>
+        suppressed(
+            proposals.size(),
+            0
+        );
+
+    kept.reserve(
+        proposals.size()
+    );
+
+    for (std::size_t i = 0;
+         i < proposals.size();
+         ++i) {
+
+        if (suppressed[i] != 0) {
+            continue;
+        }
+
+        kept.push_back(
+            proposals[i]
+        );
+
+        for (std::size_t j = i + 1;
+             j < proposals.size();
+             ++j) {
+
+            if (suppressed[j] != 0) {
+                continue;
+            }
+
+            const float iou =
+                calculateIoU(
+                    proposals[i].bbox,
+                    proposals[j].bbox
+                );
+
+            // Python keeps:
+            //
+            // iou <= threshold
+            //
+            // therefore suppress:
+            //
+            // iou > threshold
+            if (iou >
+                nmsThreshold) {
+
+                suppressed[j] = 1;
+            }
+        }
+    }
+
+    lastError_.clear();
+
+    return true;
+}
+
+float FaceDetectionModel::calculateIoU(
+    const std::array<float, 4>& lhs,
+    const std::array<float, 4>& rhs
+) noexcept
+{
+    const float lhsWidth =
+        lhs[2]
+        -
+        lhs[0]
+        +
+        1.0F;
+
+    const float lhsHeight =
+        lhs[3]
+        -
+        lhs[1]
+        +
+        1.0F;
+
+    const float rhsWidth =
+        rhs[2]
+        -
+        rhs[0]
+        +
+        1.0F;
+
+    const float rhsHeight =
+        rhs[3]
+        -
+        rhs[1]
+        +
+        1.0F;
+
+    const float lhsArea =
+        lhsWidth
+        *
+        lhsHeight;
+
+    const float rhsArea =
+        rhsWidth
+        *
+        rhsHeight;
+
+    const float xx1 =
+        std::max(
+            lhs[0],
+            rhs[0]
+        );
+
+    const float yy1 =
+        std::max(
+            lhs[1],
+            rhs[1]
+        );
+
+    const float xx2 =
+        std::min(
+            lhs[2],
+            rhs[2]
+        );
+
+    const float yy2 =
+        std::min(
+            lhs[3],
+            rhs[3]
+        );
+
+    const float intersectionWidth =
+        std::max(
+            0.0F,
+            xx2
+                -
+                xx1
+                +
+                1.0F
+        );
+
+    const float intersectionHeight =
+        std::max(
+            0.0F,
+            yy2
+                -
+                yy1
+                +
+                1.0F
+        );
+
+    const float intersection =
+        intersectionWidth
+        *
+        intersectionHeight;
+
+    const float denominator =
+        lhsArea
+        +
+        rhsArea
+        -
+        intersection;
+
+    if (denominator <= 0.0F) {
+        return 0.0F;
+    }
+
+    return
+        intersection
+        /
+        denominator;
+}
+
+bool FaceDetectionModel::postprocess(
+    std::vector<FaceDetectionResult>& results,
+    float scoreThreshold,
+    float nmsThreshold
+)
+{
+    results.clear();
+
+    if (!ready()) {
+
+        lastError_ =
+            "FaceDetectionModel is not ready";
+
+        return false;
+    }
+
+    if (!std::isfinite(
+            preprocessInfo_.detScale
+        ) ||
+        preprocessInfo_.detScale <= 0.0F) {
+
+        lastError_ =
+            "SCRFD preprocess information is invalid";
+
+        return false;
+    }
+
+    if (preprocessInfo_.originalWidth <= 0 ||
+        preprocessInfo_.originalHeight <= 0) {
+
+        lastError_ =
+            "Original image dimensions are invalid";
+
+        return false;
+    }
+
+    // =====================================================
+    // 1. Decode all strides + score threshold + sort
+    // =====================================================
+
+    std::vector<
+        FaceDetectionProposal
+    > proposals;
+
+    if (!decodeAll(
+            proposals,
+            scoreThreshold
+        )) {
+
+        return false;
+    }
+
+    // =====================================================
+    // 2. NMS
+    // =====================================================
+
+    std::vector<
+        FaceDetectionProposal
+    > kept;
+
+    if (!applyNms(
+            proposals,
+            kept,
+            nmsThreshold
+        )) {
+
+        return false;
+    }
+
+    // =====================================================
+    // 3. Map from 640x640 model coordinates back to
+    //    original image coordinates.
+    //
+    // Python:
+    //
+    // boxes /= scale
+    // kps   /= scale
+    // =====================================================
+
+    const float inverseScale =
+        1.0F
+        /
+        preprocessInfo_.detScale;
+
+    const float maxX =
+        static_cast<float>(
+            preprocessInfo_.originalWidth
+            -
+            1
+        );
+
+    const float maxY =
+        static_cast<float>(
+            preprocessInfo_.originalHeight
+            -
+            1
+        );
+
+    results.reserve(
+        kept.size()
+    );
+
+    for (const auto& proposal :
+         kept) {
+
+        FaceDetectionResult result;
+
+        result.score =
+            proposal.score;
+
+        result.bbox[0] =
+            proposal.bbox[0]
+            *
+            inverseScale;
+
+        result.bbox[1] =
+            proposal.bbox[1]
+            *
+            inverseScale;
+
+        result.bbox[2] =
+            proposal.bbox[2]
+            *
+            inverseScale;
+
+        result.bbox[3] =
+            proposal.bbox[3]
+            *
+            inverseScale;
+
+        // Python reference clips bbox only.
+        result.bbox[0] =
+            std::clamp(
+                result.bbox[0],
+                0.0F,
+                maxX
+            );
+
+        result.bbox[2] =
+            std::clamp(
+                result.bbox[2],
+                0.0F,
+                maxX
+            );
+
+        result.bbox[1] =
+            std::clamp(
+                result.bbox[1],
+                0.0F,
+                maxY
+            );
+
+        result.bbox[3] =
+            std::clamp(
+                result.bbox[3],
+                0.0F,
+                maxY
+            );
+
+        // Keep landmarks consistent with Python:
+        // map by detScale but do not clip.
+        for (std::size_t i = 0;
+             i < result.landmarks.size();
+             ++i) {
+
+            result.landmarks[i] =
+                proposal.landmarks[i]
+                *
+                inverseScale;
+        }
+
+        results.push_back(
+            result
+        );
+    }
+
+    lastError_.clear();
+
+    return true;
+}
+
+bool FaceDetectionModel::detect(
+    const cv::Mat& bgrImage,
+    std::vector<FaceDetectionResult>& results,
+    float scoreThreshold,
+    float nmsThreshold
+)
+{
+    results.clear();
+
+    if (!preprocess(
+            bgrImage
+        )) {
+
+        return false;
+    }
+
+    if (!infer()) {
+
+        return false;
+    }
+
+    if (!postprocess(
+            results,
+            scoreThreshold,
+            nmsThreshold
+        )) {
+
+        return false;
+    }
+
+    lastError_.clear();
+
+    return true;
+}
+
+cv::Mat FaceDetectionModel::renderDetections(
+    const cv::Mat& bgrImage,
+    const std::vector<FaceDetectionResult>& results
+) const
+{
+    if (bgrImage.empty()) {
+        return {};
+    }
+
+    cv::Mat rendered =
+        bgrImage.clone();
+
+    for (const auto& result :
+         results) {
+
+        // Same behavior as numpy astype(int):
+        // truncation toward zero.
+        const int x1 =
+            static_cast<int>(
+                result.bbox[0]
+            );
+
+        const int y1 =
+            static_cast<int>(
+                result.bbox[1]
+            );
+
+        const int x2 =
+            static_cast<int>(
+                result.bbox[2]
+            );
+
+        const int y2 =
+            static_cast<int>(
+                result.bbox[3]
+            );
+
+        // Python:
+        //
+        // cv2.rectangle(..., (0,255,0), 2)
+        cv::rectangle(
+            rendered,
+            cv::Point(
+                x1,
+                y1
+            ),
+            cv::Point(
+                x2,
+                y2
+            ),
+            cv::Scalar(
+                0,
+                255,
+                0
+            ),
+            2
+        );
+
+        std::ostringstream label;
+
+        label
+            << std::fixed
+            << std::setprecision(3)
+            << result.score;
+
+        // Python:
+        //
+        // cv2.putText(
+        //     img,
+        //     f"{score:.3f}",
+        //     (x1, max(0, y1 - 5)),
+        //     ...
+        // )
+        cv::putText(
+            rendered,
+            label.str(),
+            cv::Point(
+                x1,
+                std::max(
+                    0,
+                    y1 - 5
+                )
+            ),
+            cv::FONT_HERSHEY_SIMPLEX,
+            0.5,
+            cv::Scalar(
+                0,
+                255,
+                0
+            ),
+            1
+        );
+
+        // Five landmarks.
+        for (std::size_t pointIndex = 0;
+             pointIndex < 5;
+             ++pointIndex) {
+
+            const int px =
+                static_cast<int>(
+                    result.landmarks[
+                        pointIndex * 2
+                    ]
+                );
+
+            const int py =
+                static_cast<int>(
+                    result.landmarks[
+                        pointIndex * 2 + 1
+                    ]
+                );
+
+            // Python:
+            //
+            // cv2.circle(
+            //     img,
+            //     (px, py),
+            //     2,
+            //     (0,0,255),
+            //     -1
+            // )
+            cv::circle(
+                rendered,
+                cv::Point(
+                    px,
+                    py
+                ),
+                2,
+                cv::Scalar(
+                    0,
+                    0,
+                    255
+                ),
+                -1
+            );
+        }
+    }
+
+    return rendered;
 }
 
 const inference::QnnTensorBuffer*
@@ -1427,7 +1964,8 @@ FaceDetectionModel::inputBuffer() const noexcept
 std::size_t
 FaceDetectionModel::outputCount() const noexcept
 {
-    return outputBuffers_.size();
+    return
+        outputBuffers_.size();
 }
 
 const inference::QnnTensorBuffer*
@@ -1464,7 +2002,8 @@ Qnn_DataType_t FaceDetectionModel::dataType(
         return tensor.v2.dataType;
 
     default:
-        return QNN_DATATYPE_UNDEFINED;
+        return
+            QNN_DATATYPE_UNDEFINED;
     }
 }
 

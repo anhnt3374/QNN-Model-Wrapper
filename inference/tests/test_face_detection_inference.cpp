@@ -3,6 +3,8 @@
 
 #include <opencv2/imgcodecs.hpp>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
@@ -12,19 +14,19 @@
 
 namespace {
 
-bool proposalIsFinite(
-    const models::FaceDetectionProposal& proposal
+bool resultIsFinite(
+    const models::FaceDetectionResult& result
 )
 {
     if (!std::isfinite(
-            proposal.score
+            result.score
         )) {
 
         return false;
     }
 
     for (float value :
-         proposal.bbox) {
+         result.bbox) {
 
         if (!std::isfinite(
                 value
@@ -35,7 +37,7 @@ bool proposalIsFinite(
     }
 
     for (float value :
-         proposal.landmarks) {
+         result.landmarks) {
 
         if (!std::isfinite(
                 value
@@ -48,37 +50,120 @@ bool proposalIsFinite(
     return true;
 }
 
-bool proposalsAreSortedDescending(
-    const std::vector<
-        models::FaceDetectionProposal
-    >& proposals
+// Same inclusive-coordinate IoU used by the
+// Python postprocess NMS.
+float calculateIoU(
+    const std::array<float, 4>& lhs,
+    const std::array<float, 4>& rhs
 )
 {
-    if (proposals.size() < 2) {
-        return true;
+    const float lhsArea =
+        (
+            lhs[2]
+            -
+            lhs[0]
+            +
+            1.0F
+        )
+        *
+        (
+            lhs[3]
+            -
+            lhs[1]
+            +
+            1.0F
+        );
+
+    const float rhsArea =
+        (
+            rhs[2]
+            -
+            rhs[0]
+            +
+            1.0F
+        )
+        *
+        (
+            rhs[3]
+            -
+            rhs[1]
+            +
+            1.0F
+        );
+
+    const float xx1 =
+        std::max(
+            lhs[0],
+            rhs[0]
+        );
+
+    const float yy1 =
+        std::max(
+            lhs[1],
+            rhs[1]
+        );
+
+    const float xx2 =
+        std::min(
+            lhs[2],
+            rhs[2]
+        );
+
+    const float yy2 =
+        std::min(
+            lhs[3],
+            rhs[3]
+        );
+
+    const float width =
+        std::max(
+            0.0F,
+            xx2
+                -
+                xx1
+                +
+                1.0F
+        );
+
+    const float height =
+        std::max(
+            0.0F,
+            yy2
+                -
+                yy1
+                +
+                1.0F
+        );
+
+    const float intersection =
+        width
+        *
+        height;
+
+    const float denominator =
+        lhsArea
+        +
+        rhsArea
+        -
+        intersection;
+
+    if (denominator <= 0.0F) {
+        return 0.0F;
     }
 
-    for (std::size_t i = 1;
-         i < proposals.size();
-         ++i) {
-
-        if (proposals[i - 1].score <
-            proposals[i].score) {
-
-            return false;
-        }
-    }
-
-    return true;
+    return
+        intersection
+        /
+        denominator;
 }
 
-void printProposal(
-    const models::FaceDetectionProposal& proposal,
+void printResult(
+    const models::FaceDetectionResult& result,
     std::size_t index
 )
 {
     std::cout
-        << "[INFO] proposal["
+        << "[INFO] face["
         << index
         << "]\n";
 
@@ -88,25 +173,25 @@ void printProposal(
 
     std::cout
         << "       score: "
-        << proposal.score
+        << result.score
         << '\n';
 
     std::cout
         << "       bbox: ["
-        << proposal.bbox[0]
+        << result.bbox[0]
         << ", "
-        << proposal.bbox[1]
+        << result.bbox[1]
         << ", "
-        << proposal.bbox[2]
+        << result.bbox[2]
         << ", "
-        << proposal.bbox[3]
+        << result.bbox[3]
         << "]\n";
 
     std::cout
         << "       landmarks: [";
 
     for (std::size_t i = 0;
-         i < proposal.landmarks.size();
+         i < result.landmarks.size();
          ++i) {
 
         if (i > 0) {
@@ -114,7 +199,7 @@ void printProposal(
         }
 
         std::cout
-            << proposal.landmarks[i];
+            << result.landmarks[i];
     }
 
     std::cout
@@ -129,16 +214,22 @@ int main(
     char** argv
 )
 {
-    if (argc != 2) {
+    if (argc != 3) {
 
         std::cerr
             << "Usage:\n"
             << "  "
             << argv[0]
-            << " <image.jpg>\n";
+            << " <image.jpg> <result.jpg>\n";
 
         return 1;
     }
+
+    constexpr float SCORE_THRESHOLD =
+        0.5F;
+
+    constexpr float NMS_THRESHOLD =
+        0.4F;
 
     const char* backendPath =
         std::getenv(
@@ -169,6 +260,13 @@ int main(
     const char* imagePath =
         argv[1];
 
+    const char* resultPath =
+        argv[2];
+
+    // =====================================================
+    // Input image
+    // =====================================================
+
     cv::Mat image =
         cv::imread(
             imagePath,
@@ -198,7 +296,7 @@ int main(
         << '\n';
 
     // =====================================================
-    // Backend
+    // QNN backend
     // =====================================================
 
     inference::QnnBackend backend;
@@ -259,7 +357,7 @@ int main(
         << "[PASS] QNN backend ready\n";
 
     // =====================================================
-    // FaceDetectionModel
+    // Face model
     // =====================================================
 
     models::FaceDetectionModel model(
@@ -281,234 +379,236 @@ int main(
     std::cout
         << "[PASS] FaceDetectionModel initialized\n";
 
-    if (!model.preprocess(
-            image
-        )) {
-
-        std::cerr
-            << "[ERROR] preprocess: "
-            << model.lastError()
-            << '\n';
-
-        return 1;
-    }
-
-    std::cout
-        << "[PASS] real image preprocessed\n";
-
-    if (!model.infer()) {
-
-        std::cerr
-            << "[ERROR] infer: "
-            << model.lastError()
-            << '\n';
-
-        return 1;
-    }
-
-    std::cout
-        << "[PASS] FaceDetectionModel inference succeeded\n";
-
     // =====================================================
-    // 5H.4-A
+    // Complete detection:
     //
-    // threshold = 0
-    //
-    // Every candidate from all 3 levels must survive.
-    //
-    // 12800 + 3200 + 800 = 16800.
+    // preprocess
+    // infer
+    // decode 8/16/32
+    // threshold
+    // NMS
+    // map back to image
     // =====================================================
 
     std::vector<
-        models::FaceDetectionProposal
-    > allProposals;
+        models::FaceDetectionResult
+    > results;
 
-    if (!model.decodeAll(
-            allProposals,
-            0.0F
+    if (!model.detect(
+            image,
+            results,
+            SCORE_THRESHOLD,
+            NMS_THRESHOLD
         )) {
 
         std::cerr
-            << "[ERROR] decodeAll(0.0): "
+            << "[ERROR] detect: "
             << model.lastError()
             << '\n';
 
         return 1;
     }
 
-    constexpr std::size_t EXPECTED_ALL =
-        16800;
-
-    if (allProposals.size() !=
-        EXPECTED_ALL) {
-
-        std::cerr
-            << "[ERROR] all-level candidate count mismatch. "
-            << "expected="
-            << EXPECTED_ALL
-            << ", actual="
-            << allProposals.size()
-            << '\n';
-
-        return 1;
-    }
+    std::cout
+        << "[PASS] FaceDetectionModel detect succeeded\n";
 
     std::cout
-        << "[PASS] all SCRFD levels produced "
-        << EXPECTED_ALL
-        << " candidates\n";
+        << "[INFO] thresholds:\n"
+        << "       score: "
+        << SCORE_THRESHOLD
+        << '\n'
+        << "       nms: "
+        << NMS_THRESHOLD
+        << '\n';
+
+    std::cout
+        << "[INFO] faces after NMS: "
+        << results.size()
+        << '\n';
 
     // =====================================================
-    // Every decoded value should be finite.
+    // Validate final results
     // =====================================================
 
-    for (const auto& proposal :
-         allProposals) {
+    float previousScore =
+        2.0F;
 
-        if (!proposalIsFinite(
-                proposal
+    for (std::size_t i = 0;
+         i < results.size();
+         ++i) {
+
+        const auto& result =
+            results[i];
+
+        if (!resultIsFinite(
+                result
             )) {
 
             std::cerr
-                << "[ERROR] decoded proposal contains "
-                << "non-finite value\n";
+                << "[ERROR] face["
+                << i
+                << "] contains non-finite values\n";
 
             return 1;
         }
-    }
 
-    std::cout
-        << "[PASS] all decoded values are finite\n";
-
-    // =====================================================
-    // decodeAll() must sort descending by score.
-    // =====================================================
-
-    if (!proposalsAreSortedDescending(
-            allProposals
-        )) {
-
-        std::cerr
-            << "[ERROR] proposals are not sorted "
-            << "by descending score\n";
-
-        return 1;
-    }
-
-    std::cout
-        << "[PASS] proposals sorted by descending score\n";
-
-    // =====================================================
-    // 5H.4-B
-    //
-    // Same threshold as working Python.
-    // =====================================================
-
-    constexpr float SCORE_THRESHOLD =
-        0.5F;
-
-    std::vector<
-        models::FaceDetectionProposal
-    > filteredProposals;
-
-    if (!model.decodeAll(
-            filteredProposals,
-            SCORE_THRESHOLD
-        )) {
-
-        std::cerr
-            << "[ERROR] decodeAll(0.5): "
-            << model.lastError()
-            << '\n';
-
-        return 1;
-    }
-
-    for (const auto& proposal :
-         filteredProposals) {
-
-        if (proposal.score <
+        if (result.score <
             SCORE_THRESHOLD) {
 
             std::cerr
-                << "[ERROR] proposal below score threshold\n";
+                << "[ERROR] face["
+                << i
+                << "] is below score threshold\n";
 
             return 1;
         }
 
-        if (!proposalIsFinite(
-                proposal
-            )) {
+        if (result.score >
+            previousScore) {
 
             std::cerr
-                << "[ERROR] filtered proposal contains "
-                << "non-finite value\n";
+                << "[ERROR] final results are not "
+                << "sorted by confidence\n";
+
+            return 1;
+        }
+
+        previousScore =
+            result.score;
+
+        // BBox must already be clipped to original image.
+        if (result.bbox[0] < 0.0F ||
+            result.bbox[1] < 0.0F ||
+            result.bbox[2] >
+                static_cast<float>(
+                    image.cols - 1
+                ) ||
+            result.bbox[3] >
+                static_cast<float>(
+                    image.rows - 1
+                )) {
+
+            std::cerr
+                << "[ERROR] face["
+                << i
+                << "] bbox outside original image\n";
 
             return 1;
         }
     }
 
-    if (!proposalsAreSortedDescending(
-            filteredProposals
-        )) {
+    std::cout
+        << "[PASS] final coordinates mapped "
+        << "to original image\n";
 
-        std::cerr
-            << "[ERROR] filtered proposals are not sorted\n";
+    std::cout
+        << "[PASS] final detections sorted "
+        << "by descending score\n";
 
-        return 1;
+    // =====================================================
+    // Validate NMS result:
+    //
+    // No pair of kept boxes should have IoU > 0.4.
+    // =====================================================
+
+    for (std::size_t i = 0;
+         i < results.size();
+         ++i) {
+
+        for (std::size_t j = i + 1;
+             j < results.size();
+             ++j) {
+
+            const float iou =
+                calculateIoU(
+                    results[i].bbox,
+                    results[j].bbox
+                );
+
+            if (iou >
+                NMS_THRESHOLD + 1e-5F) {
+
+                std::cerr
+                    << "[ERROR] NMS validation failed: "
+                    << "face["
+                    << i
+                    << "] vs face["
+                    << j
+                    << "] IoU="
+                    << iou
+                    << '\n';
+
+                return 1;
+            }
+        }
     }
 
     std::cout
-        << "[PASS] score threshold 0.5 applied\n";
-
-    std::cout
-        << "[PASS] filtered proposals remain sorted\n";
+        << "[PASS] NMS IoU validation succeeded\n";
 
     // =====================================================
-    // Summary
+    // Print detections
     // =====================================================
-
-    std::cout
-        << "[INFO] SCRFD proposals:\n";
-
-    std::cout
-        << "       stride 8 candidates : 12800\n";
-
-    std::cout
-        << "       stride 16 candidates: 3200\n";
-
-    std::cout
-        << "       stride 32 candidates: 800\n";
-
-    std::cout
-        << "       total before threshold: "
-        << allProposals.size()
-        << '\n';
-
-    std::cout
-        << "       after threshold 0.5: "
-        << filteredProposals.size()
-        << '\n';
-
-    // Print highest-confidence proposals.
-    const std::size_t printCount =
-        filteredProposals.size() < 5
-            ? filteredProposals.size()
-            : 5;
 
     for (std::size_t i = 0;
-         i < printCount;
+         i < results.size();
          ++i) {
 
-        printProposal(
-            filteredProposals[i],
+        printResult(
+            results[i],
             i
         );
     }
 
+    // =====================================================
+    // Render final image
+    // =====================================================
+
+    cv::Mat rendered =
+        model.renderDetections(
+            image,
+            results
+        );
+
+    if (rendered.empty()) {
+
+        std::cerr
+            << "[ERROR] rendered image is empty\n";
+
+        return 1;
+    }
+
+    if (!cv::imwrite(
+            resultPath,
+            rendered
+        )) {
+
+        std::cerr
+            << "[ERROR] Cannot save result image: "
+            << resultPath
+            << '\n';
+
+        return 1;
+    }
+
     std::cout
-        << "[PASS] 5H.4 SCRFD all-level "
-        << "decode test complete\n";
+        << "[PASS] rendered image saved\n";
+
+    std::cout
+        << "[INFO] result: "
+        << resultPath
+        << '\n';
+
+    std::cout
+        << "[PASS] 5H.5 NMS complete\n";
+
+    std::cout
+        << "[PASS] 5H.6 final SCRFD "
+        << "postprocess complete\n";
+
+    std::cout
+        << "[PASS] FaceDetectionModel "
+        << "end-to-end pipeline complete\n";
 
     return 0;
 }
