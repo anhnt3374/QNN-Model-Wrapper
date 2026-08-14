@@ -1,201 +1,88 @@
 #include "inference/qnn_backend.hpp"
-#include "inference/qnn_quantization.hpp"
 #include "models/face_detection_model.hpp"
-
-#include <QnnTypes.h>
 
 #include <opencv2/imgcodecs.hpp>
 
-#include <algorithm>
+#include <cmath>
 #include <cstddef>
-#include <cstdint>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <vector>
 
 namespace {
 
-Qnn_DataType_t dataType(
-    const Qnn_Tensor_t& tensor
+bool proposalIsFinite(
+    const models::FaceDetectionProposal& proposal
 )
 {
-    switch (tensor.version) {
-
-    case QNN_TENSOR_VERSION_1:
-        return tensor.v1.dataType;
-
-    case QNN_TENSOR_VERSION_2:
-        return tensor.v2.dataType;
-
-    default:
-        return QNN_DATATYPE_UNDEFINED;
-    }
-}
-
-const Qnn_QuantizeParams_t*
-quantization(
-    const Qnn_Tensor_t& tensor
-)
-{
-    switch (tensor.version) {
-
-    case QNN_TENSOR_VERSION_1:
-        return
-            &tensor.v1.quantizeParams;
-
-    case QNN_TENSOR_VERSION_2:
-        return
-            &tensor.v2.quantizeParams;
-
-    default:
-        return nullptr;
-    }
-}
-
-bool printOutputSample(
-    const inference::QnnTensorBuffer& buffer,
-    std::size_t maxValues,
-    uint64_t& totalNonZero
-)
-{
-    if (dataType(
-            buffer.tensor()
-        ) !=
-        QNN_DATATYPE_UFIXED_POINT_16) {
-
-        std::cerr
-            << "[ERROR] "
-            << buffer.name()
-            << " is not UFIXED_POINT_16\n";
+    if (!std::isfinite(
+            proposal.score
+        )) {
 
         return false;
     }
 
-    const auto* params =
-        quantization(
-            buffer.tensor()
-        );
+    for (float value :
+         proposal.bbox) {
 
-    if (params == nullptr) {
+        if (!std::isfinite(
+                value
+            )) {
 
-        std::cerr
-            << "[ERROR] "
-            << buffer.name()
-            << " quantization is null\n";
-
-        return false;
-    }
-
-    if (params->quantizationEncoding !=
-        QNN_QUANTIZATION_ENCODING_SCALE_OFFSET) {
-
-        std::cerr
-            << "[ERROR] "
-            << buffer.name()
-            << " does not use SCALE_OFFSET\n";
-
-        return false;
-    }
-
-    const auto* data =
-        static_cast<const uint16_t*>(
-            buffer.data()
-        );
-
-    if (data == nullptr) {
-
-        std::cerr
-            << "[ERROR] "
-            << buffer.name()
-            << " data pointer is null\n";
-
-        return false;
-    }
-
-    const float scale =
-        params
-            ->scaleOffsetEncoding
-            .scale;
-
-    const int32_t offset =
-        params
-            ->scaleOffsetEncoding
-            .offset;
-
-    const std::size_t count =
-        std::min<std::size_t>(
-            maxValues,
-            static_cast<std::size_t>(
-                buffer.elementCount()
-            )
-        );
-
-    uint64_t nonZero = 0;
-
-    for (uint64_t i = 0;
-         i < buffer.elementCount();
-         ++i) {
-
-        if (data[i] != 0) {
-            ++nonZero;
+            return false;
         }
     }
 
-    totalNonZero += nonZero;
+    for (float value :
+         proposal.landmarks) {
 
-    std::cout
-        << "       elements: "
-        << buffer.elementCount()
-        << '\n';
+        if (!std::isfinite(
+                value
+            )) {
 
-    std::cout
-        << "       scale: "
-        << scale
-        << '\n';
-
-    std::cout
-        << "       offset: "
-        << offset
-        << '\n';
-
-    std::cout
-        << "       non-zero raw values: "
-        << nonZero
-        << '\n';
-
-    // =====================================================
-    // Raw sample
-    // =====================================================
-
-    std::cout
-        << "       raw: [";
-
-    for (std::size_t i = 0;
-         i < count;
-         ++i) {
-
-        if (i > 0) {
-            std::cout << ", ";
+            return false;
         }
-
-        std::cout
-            << data[i];
     }
 
+    return true;
+}
+
+void printProposal(
+    const models::FaceDetectionProposal& proposal,
+    std::size_t index
+)
+{
     std::cout
+        << "[INFO] proposal["
+        << index
         << "]\n";
 
-    // =====================================================
-    // Dequantized sample
-    // =====================================================
+    std::cout
+        << std::fixed
+        << std::setprecision(4);
 
     std::cout
-        << "       float: ["
-        << std::fixed
-        << std::setprecision(6);
+        << "       score: "
+        << proposal.score
+        << '\n';
+
+    std::cout
+        << "       bbox: ["
+        << proposal.bbox[0]
+        << ", "
+        << proposal.bbox[1]
+        << ", "
+        << proposal.bbox[2]
+        << ", "
+        << proposal.bbox[3]
+        << "]\n";
+
+    std::cout
+        << "       landmarks: [";
 
     for (std::size_t i = 0;
-         i < count;
+         i < proposal.landmarks.size();
          ++i) {
 
         if (i > 0) {
@@ -203,18 +90,12 @@ bool printOutputSample(
         }
 
         std::cout
-            << inference::dequantizeScaleOffset(
-                   data[i],
-                   scale,
-                   offset
-               );
+            << proposal.landmarks[i];
     }
 
     std::cout
         << "]\n"
         << std::defaultfloat;
-
-    return true;
 }
 
 } // namespace
@@ -262,7 +143,7 @@ int main(
     }
 
     // =====================================================
-    // Load real image
+    // Real image
     // =====================================================
 
     const char* imagePath =
@@ -297,7 +178,7 @@ int main(
         << '\n';
 
     // =====================================================
-    // Backend
+    // QNN backend
     // =====================================================
 
     inference::QnnBackend backend;
@@ -358,7 +239,7 @@ int main(
         << "[PASS] QNN backend ready\n";
 
     // =====================================================
-    // SCRFD
+    // SCRFD model
     // =====================================================
 
     models::FaceDetectionModel model(
@@ -381,7 +262,7 @@ int main(
         << "[PASS] FaceDetectionModel initialized\n";
 
     // =====================================================
-    // Preprocess real image
+    // Preprocess
     // =====================================================
 
     if (!model.preprocess(
@@ -396,40 +277,12 @@ int main(
         return 1;
     }
 
-    const auto& info =
-        model.preprocessInfo();
-
     std::cout
         << "[PASS] real image preprocessed\n";
 
-    std::cout
-        << "[INFO] preprocess:\n";
-
-    std::cout
-        << "       original: "
-        << info.originalWidth
-        << "x"
-        << info.originalHeight
-        << '\n';
-
-    std::cout
-        << "       resized: "
-        << info.resizedWidth
-        << "x"
-        << info.resizedHeight
-        << '\n';
-
-    std::cout
-        << "       det_scale: "
-        << info.detScale
-        << '\n';
-
     // =====================================================
-    // Execute model
+    // Inference
     // =====================================================
-
-    std::cout
-        << "[INFO] executing FaceDetectionModel...\n";
 
     if (!model.infer()) {
 
@@ -445,74 +298,158 @@ int main(
         << "[PASS] FaceDetectionModel inference succeeded\n";
 
     // =====================================================
-    // Inspect all nine SCRFD output buffers
+    // 5H.3-A
+    //
+    // threshold = 0
+    //
+    // Every stride-8 candidate should be returned.
+    //
+    // 80 * 80 * 2 = 12800
     // =====================================================
 
-    if (model.outputCount() != 9) {
+    std::vector<
+        models::FaceDetectionProposal
+    > allStride8;
+
+    if (!model.decodeStride8(
+            allStride8,
+            0.0F
+        )) {
 
         std::cerr
-            << "[ERROR] expected 9 outputs, got "
-            << model.outputCount()
+            << "[ERROR] decodeStride8(0.0): "
+            << model.lastError()
             << '\n';
 
         return 1;
     }
 
-    uint64_t totalNonZero = 0;
-
-    for (std::size_t i = 0;
-         i < model.outputCount();
-         ++i) {
-
-        const auto* output =
-            model.outputBuffer(
-                i
-            );
-
-        if (output == nullptr) {
-
-            std::cerr
-                << "[ERROR] output["
-                << i
-                << "] is null\n";
-
-            return 1;
-        }
-
-        std::cout
-            << "[INFO] output["
-            << i
-            << "] "
-            << output->name()
-            << '\n';
-
-        if (!printOutputSample(
-                *output,
-                8,
-                totalNonZero
-            )) {
-
-            return 1;
-        }
-    }
-
-    if (totalNonZero == 0) {
+    if (allStride8.size() != 12800) {
 
         std::cerr
-            << "[ERROR] all SCRFD output buffers "
-            << "are still zero\n";
+            << "[ERROR] stride-8 candidate count mismatch. "
+            << "expected=12800, actual="
+            << allStride8.size()
+            << '\n';
 
         return 1;
     }
 
     std::cout
-        << "[INFO] total non-zero output values: "
-        << totalNonZero
+        << "[PASS] stride-8 produced 12800 candidates\n";
+
+    // =====================================================
+    // Validate values
+    // =====================================================
+
+    for (const auto& proposal :
+         allStride8) {
+
+        if (!proposalIsFinite(
+                proposal
+            )) {
+
+            std::cerr
+                << "[ERROR] stride-8 proposal "
+                << "contains non-finite values\n";
+
+            return 1;
+        }
+    }
+
+    std::cout
+        << "[PASS] stride-8 decoded values are finite\n";
+
+    // =====================================================
+    // 5H.3-B
+    //
+    // Same threshold used by working Python postprocess.
+    // =====================================================
+
+    constexpr float SCORE_THRESHOLD =
+        0.5F;
+
+    std::vector<
+        models::FaceDetectionProposal
+    > filteredStride8;
+
+    if (!model.decodeStride8(
+            filteredStride8,
+            SCORE_THRESHOLD
+        )) {
+
+        std::cerr
+            << "[ERROR] decodeStride8(0.5): "
+            << model.lastError()
+            << '\n';
+
+        return 1;
+    }
+
+    for (const auto& proposal :
+         filteredStride8) {
+
+        if (proposal.score <
+            SCORE_THRESHOLD) {
+
+            std::cerr
+                << "[ERROR] proposal below "
+                << "score threshold\n";
+
+            return 1;
+        }
+
+        if (!proposalIsFinite(
+                proposal
+            )) {
+
+            std::cerr
+                << "[ERROR] filtered proposal "
+                << "contains non-finite values\n";
+
+            return 1;
+        }
+    }
+
+    std::cout
+        << "[PASS] stride-8 score threshold applied\n";
+
+    std::cout
+        << "[INFO] stride-8 candidates:\n";
+
+    std::cout
+        << "       before threshold: "
+        << allStride8.size()
         << '\n';
 
     std::cout
-        << "[PASS] 5H.2 real-image SCRFD "
-        << "inference test complete\n";
+        << "       after threshold 0.5: "
+        << filteredStride8.size()
+        << '\n';
+
+    // =====================================================
+    // Print first few proposals for manual comparison
+    // with Python if needed.
+    // =====================================================
+
+    const std::size_t printCount =
+        filteredStride8.size() < 5
+            ? filteredStride8.size()
+            : 5;
+
+    for (std::size_t i = 0;
+         i < printCount;
+         ++i) {
+
+        printProposal(
+            filteredStride8[i],
+            i
+        );
+    }
+
+    std::cout
+        << "[PASS] 5H.3 SCRFD stride-8 "
+        << "decode test complete\n";
 
     return 0;
 }
