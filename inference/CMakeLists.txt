@@ -38,6 +38,7 @@ add_library(
     src/qnn_backend.cpp
     src/qnn_context.cpp
     src/qnn_model.cpp
+    src/qnn_tensor_buffer.cpp
 )
 
 target_include_directories(

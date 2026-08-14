@@ -1,483 +1,133 @@
 #include "inference/qnn_backend.hpp"
 #include "inference/qnn_model.hpp"
-
-#include <QnnTensor.h>
-#include <QnnTypes.h>
+#include "inference/qnn_tensor_buffer.hpp"
 
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
+#include <vector>
 
 namespace {
 
-const char* dataTypeName(
-    Qnn_DataType_t dataType
+using TensorBufferPtr =
+    std::unique_ptr<
+        inference::QnnTensorBuffer
+    >;
+
+bool createTensorBuffers(
+    const Qnn_Tensor_t* tensors,
+    uint32_t tensorCount,
+    std::vector<TensorBufferPtr>& buffers,
+    const char* prefix
 )
 {
-    switch (dataType) {
+    if (tensorCount > 0 &&
+        tensors == nullptr) {
 
-    case QNN_DATATYPE_FLOAT_32:
-        return "FLOAT_32";
+        std::cerr
+            << "[ERROR] "
+            << prefix
+            << " tensor metadata is null\n";
 
-    case QNN_DATATYPE_FLOAT_16:
-        return "FLOAT_16";
-
-    case QNN_DATATYPE_INT_8:
-        return "INT_8";
-
-    case QNN_DATATYPE_INT_16:
-        return "INT_16";
-
-    case QNN_DATATYPE_UINT_8:
-        return "UINT_8";
-
-    case QNN_DATATYPE_UINT_16:
-        return "UINT_16";
-
-    case QNN_DATATYPE_SFIXED_POINT_8:
-        return "SFIXED_POINT_8";
-
-    case QNN_DATATYPE_SFIXED_POINT_16:
-        return "SFIXED_POINT_16";
-
-    case QNN_DATATYPE_UFIXED_POINT_8:
-        return "UFIXED_POINT_8";
-
-    case QNN_DATATYPE_UFIXED_POINT_16:
-        return "UFIXED_POINT_16";
-
-    default:
-        return "UNKNOWN";
-    }
-}
-
-uint32_t bytesPerElement(
-    Qnn_DataType_t dataType
-)
-{
-    switch (dataType) {
-
-    case QNN_DATATYPE_INT_8:
-    case QNN_DATATYPE_UINT_8:
-    case QNN_DATATYPE_SFIXED_POINT_8:
-    case QNN_DATATYPE_UFIXED_POINT_8:
-    case QNN_DATATYPE_BOOL_8:
-        return 1;
-
-    case QNN_DATATYPE_FLOAT_16:
-    case QNN_DATATYPE_INT_16:
-    case QNN_DATATYPE_UINT_16:
-    case QNN_DATATYPE_SFIXED_POINT_16:
-    case QNN_DATATYPE_UFIXED_POINT_16:
-        return 2;
-
-    case QNN_DATATYPE_FLOAT_32:
-    case QNN_DATATYPE_INT_32:
-    case QNN_DATATYPE_UINT_32:
-    case QNN_DATATYPE_SFIXED_POINT_32:
-    case QNN_DATATYPE_UFIXED_POINT_32:
-        return 4;
-
-    default:
-        return 0;
-    }
-}
-
-uint64_t elementCount(
-    const uint32_t* dimensions,
-    uint32_t rank
-)
-{
-    if (dimensions == nullptr ||
-        rank == 0) {
-
-        return 0;
+        return false;
     }
 
-    uint64_t count = 1;
+    buffers.reserve(
+        tensorCount
+    );
 
     for (uint32_t i = 0;
-         i < rank;
+         i < tensorCount;
          ++i) {
 
-        count *= dimensions[i];
-    }
+        auto buffer =
+            std::make_unique<
+                inference::QnnTensorBuffer
+            >();
 
-    return count;
-}
+        if (!buffer->initialize(
+                tensors[i]
+            )) {
 
-void printDimensions(
-    const uint32_t* dimensions,
-    uint32_t rank
-)
-{
-    std::cout << "[";
+            std::cerr
+                << "[ERROR] failed to initialize "
+                << prefix
+                << "["
+                << i
+                << "]: "
+                << buffer->lastError()
+                << '\n';
 
-    for (uint32_t i = 0;
-         i < rank;
-         ++i) {
-
-        if (i > 0) {
-            std::cout << ", ";
-        }
-
-        if (dimensions != nullptr) {
-            std::cout << dimensions[i];
-        } else {
-            std::cout << "?";
-        }
-    }
-
-    std::cout << "]";
-}
-
-void printDynamicDimensions(
-    const uint8_t* dynamicDimensions,
-    uint32_t rank
-)
-{
-    if (dynamicDimensions == nullptr) {
-        std::cout << "<all static>";
-        return;
-    }
-
-    std::cout << "[";
-
-    for (uint32_t i = 0;
-         i < rank;
-         ++i) {
-
-        if (i > 0) {
-            std::cout << ", ";
+            return false;
         }
 
         std::cout
-            << static_cast<int>(
-                   dynamicDimensions[i]
-               );
-    }
-
-    std::cout << "]";
-}
-
-void printQuantization(
-    const Qnn_QuantizeParams_t& quantizeParams
-)
-{
-    std::cout
-        << "       quantization definition: "
-        << static_cast<int>(
-               quantizeParams.encodingDefinition
-           )
-        << '\n';
-
-    std::cout
-        << "       quantization encoding: "
-        << static_cast<int>(
-               quantizeParams.quantizationEncoding
-           )
-        << '\n';
-
-    if (quantizeParams.quantizationEncoding ==
-        QNN_QUANTIZATION_ENCODING_SCALE_OFFSET) {
+            << "[PASS] "
+            << prefix
+            << "["
+            << i
+            << "] buffer allocated\n";
 
         std::cout
-            << "       quantization type: "
-            << "SCALE_OFFSET\n";
-
-        std::cout
-            << "       scale: "
-            << quantizeParams
-                   .scaleOffsetEncoding
-                   .scale
+            << "       name: "
+            << buffer->name()
             << '\n';
 
         std::cout
-            << "       offset: "
-            << quantizeParams
-                   .scaleOffsetEncoding
-                   .offset
+            << "       elements: "
+            << buffer->elementCount()
             << '\n';
-    }
-}
-
-void printTensorCommon(
-    const char* name,
-    uint32_t id,
-    Qnn_TensorType_t type,
-    Qnn_TensorDataFormat_t dataFormat,
-    Qnn_DataType_t dataType,
-    const Qnn_QuantizeParams_t& quantizeParams,
-    uint32_t rank,
-    const uint32_t* dimensions,
-    Qnn_TensorMemType_t memType
-)
-{
-    std::cout
-        << "       name: "
-        << (
-            name != nullptr
-                ? name
-                : "<null>"
-        )
-        << '\n';
-
-    std::cout
-        << "       id: "
-        << id
-        << '\n';
-
-    std::cout
-        << "       type: "
-        << static_cast<int>(type)
-        << '\n';
-
-    std::cout
-        << "       data format: "
-        << dataFormat
-        << '\n';
-
-    std::cout
-        << "       data type: "
-        << static_cast<int>(dataType)
-        << " ("
-        << dataTypeName(dataType)
-        << ")"
-        << '\n';
-
-    std::cout
-        << "       rank: "
-        << rank
-        << '\n';
-
-    std::cout
-        << "       dimensions: ";
-
-    printDimensions(
-        dimensions,
-        rank
-    );
-
-    std::cout << '\n';
-
-    const uint64_t elements =
-        elementCount(
-            dimensions,
-            rank
-        );
-
-    const uint32_t elementBytes =
-        bytesPerElement(
-            dataType
-        );
-
-    const uint64_t bufferBytes =
-        elements *
-        static_cast<uint64_t>(
-            elementBytes
-        );
-
-    std::cout
-        << "       element count: "
-        << elements
-        << '\n';
-
-    std::cout
-        << "       bytes / element: "
-        << elementBytes
-        << '\n';
-
-    std::cout
-        << "       buffer bytes: "
-        << bufferBytes
-        << '\n';
-
-    std::cout
-        << "       mem type: "
-        << static_cast<int>(memType)
-        << '\n';
-
-    printQuantization(
-        quantizeParams
-    );
-}
-
-void printTensorV1(
-    const Qnn_TensorV1_t& tensor
-)
-{
-    printTensorCommon(
-        tensor.name,
-        tensor.id,
-        tensor.type,
-        tensor.dataFormat,
-        tensor.dataType,
-        tensor.quantizeParams,
-        tensor.rank,
-        tensor.dimensions,
-        tensor.memType
-    );
-}
-
-void printTensorV2(
-    const Qnn_TensorV2_t& tensor
-)
-{
-    printTensorCommon(
-        tensor.name,
-        tensor.id,
-        tensor.type,
-        tensor.dataFormat,
-        tensor.dataType,
-        tensor.quantizeParams,
-        tensor.rank,
-        tensor.dimensions,
-        tensor.memType
-    );
-
-    std::cout
-        << "       dynamic dimensions: ";
-
-    printDynamicDimensions(
-        tensor.isDynamicDimensions,
-        tensor.rank
-    );
-
-    std::cout << '\n';
-}
-
-void printTensor(
-    const Qnn_Tensor_t& tensor,
-    const char* prefix,
-    uint32_t index
-)
-{
-    std::cout
-        << "[INFO] "
-        << prefix
-        << "["
-        << index
-        << "]\n";
-
-    std::cout
-        << "       version: "
-        << static_cast<int>(
-               tensor.version
-           )
-        << '\n';
-
-    switch (tensor.version) {
-
-    case QNN_TENSOR_VERSION_1:
-
-        printTensorV1(
-            tensor.v1
-        );
-
-        break;
-
-    case QNN_TENSOR_VERSION_2:
-
-        printTensorV2(
-            tensor.v2
-        );
-
-        break;
-
-    default:
 
         std::cout
-            << "       [WARN] Unsupported tensor version\n";
+            << "       bytes / element: "
+            << buffer->bytesPerElement()
+            << '\n';
 
-        break;
+        std::cout
+            << "       buffer bytes: "
+            << buffer->byteSize()
+            << '\n';
+
+        std::cout
+            << "       data pointer: "
+            << buffer->data()
+            << '\n';
+
+        if (buffer->data() == nullptr) {
+
+            std::cerr
+                << "[ERROR] "
+                << prefix
+                << "["
+                << i
+                << "] has null buffer\n";
+
+            return false;
+        }
+
+        buffers.push_back(
+            std::move(buffer)
+        );
     }
+
+    return true;
 }
 
-void printGraph(
-    const qnn_wrapper_api::GraphInfo_t& graph,
-    uint32_t graphIndex
+uint64_t totalBufferBytes(
+    const std::vector<TensorBufferPtr>& buffers
 )
 {
-    std::cout
-        << "\n"
-        << "========================================\n";
+    uint64_t total = 0;
 
-    std::cout
-        << "[INFO] graph["
-        << graphIndex
-        << "]\n";
+    for (const auto& buffer :
+         buffers) {
 
-    std::cout
-        << "[INFO] graph name: "
-        << (
-            graph.graphName != nullptr
-                ? graph.graphName
-                : "<null>"
-        )
-        << '\n';
-
-    std::cout
-        << "[INFO] graph handle: "
-        << graph.graph
-        << '\n';
-
-    // =====================================================
-    // Inputs
-    // =====================================================
-
-    std::cout
-        << "[INFO] input count: "
-        << graph.numInputTensors
-        << '\n';
-
-    if (graph.inputTensors == nullptr &&
-        graph.numInputTensors > 0) {
-
-        std::cout
-            << "[ERROR] input tensor array is null\n";
-
-        return;
+        total +=
+            buffer->byteSize();
     }
 
-    for (uint32_t i = 0;
-         i < graph.numInputTensors;
-         ++i) {
-
-        printTensor(
-            graph.inputTensors[i],
-            "input",
-            i
-        );
-    }
-
-    // =====================================================
-    // Outputs
-    // =====================================================
-
-    std::cout
-        << "[INFO] output count: "
-        << graph.numOutputTensors
-        << '\n';
-
-    if (graph.outputTensors == nullptr &&
-        graph.numOutputTensors > 0) {
-
-        std::cout
-            << "[ERROR] output tensor array is null\n";
-
-        return;
-    }
-
-    for (uint32_t i = 0;
-         i < graph.numOutputTensors;
-         ++i) {
-
-        printTensor(
-            graph.outputTensors[i],
-            "output",
-            i
-        );
-    }
+    return total;
 }
 
 } // namespace
@@ -495,15 +145,19 @@ int main()
         );
 
     if (backendPath == nullptr) {
+
         std::cerr
-            << "[ERROR] QNN_BACKEND_PATH is not set\n";
+            << "[ERROR] "
+            << "QNN_BACKEND_PATH is not set\n";
 
         return 1;
     }
 
     if (modelPath == nullptr) {
+
         std::cerr
-            << "[ERROR] QNN_MODEL_PATH is not set\n";
+            << "[ERROR] "
+            << "QNN_MODEL_PATH is not set\n";
 
         return 1;
     }
@@ -519,7 +173,7 @@ int main()
         << '\n';
 
     // =====================================================
-    // Runtime
+    // Backend runtime
     // =====================================================
 
     inference::QnnBackend backend;
@@ -540,6 +194,7 @@ int main()
         << "[PASS] QNN backend library loaded\n";
 
     if (!backend.loadProviders()) {
+
         std::cerr
             << "[ERROR] loadProviders: "
             << backend.lastError()
@@ -552,6 +207,7 @@ int main()
         << "[PASS] QNN providers loaded\n";
 
     if (!backend.selectInterface()) {
+
         std::cerr
             << "[ERROR] selectInterface: "
             << backend.lastError()
@@ -564,6 +220,7 @@ int main()
         << "[PASS] QNN interface selected\n";
 
     if (!backend.createBackend()) {
+
         std::cerr
             << "[ERROR] createBackend: "
             << backend.lastError()
@@ -576,6 +233,7 @@ int main()
         << "[PASS] QNN backend created\n";
 
     if (!backend.createDevice()) {
+
         std::cerr
             << "[ERROR] createDevice: "
             << backend.lastError()
@@ -610,10 +268,8 @@ int main()
     std::cout
         << "[PASS] model .so loaded\n";
 
-    std::cout
-        << "[PASS] required model symbols found\n";
-
     if (!model.composeGraphs()) {
+
         std::cerr
             << "[ERROR] composeGraphs: "
             << model.lastError()
@@ -631,36 +287,113 @@ int main()
         << '\n';
 
     // =====================================================
-    // Metadata inspection
+    // For now SCRFD has exactly one graph.
     // =====================================================
 
-    for (uint32_t graphIndex = 0;
-         graphIndex < model.graphCount();
-         ++graphIndex) {
-
-        const auto* graph =
-            model.graphInfo(
-                graphIndex
-            );
-
-        if (graph == nullptr) {
-            std::cerr
-                << "[ERROR] graphInfo("
-                << graphIndex
-                << ") returned null\n";
-
-            return 1;
-        }
-
-        printGraph(
-            *graph,
-            graphIndex
+    const auto* graph =
+        model.graphInfo(
+            0
         );
+
+    if (graph == nullptr) {
+
+        std::cerr
+            << "[ERROR] graphInfo(0) returned null\n";
+
+        return 1;
     }
 
     std::cout
+        << "[INFO] graph name: "
+        << (
+            graph->graphName != nullptr
+                ? graph->graphName
+                : "<null>"
+        )
+        << '\n';
+
+    std::cout
+        << "[INFO] input count: "
+        << graph->numInputTensors
+        << '\n';
+
+    std::cout
+        << "[INFO] output count: "
+        << graph->numOutputTensors
+        << '\n';
+
+    // =====================================================
+    // Allocate runtime input tensors
+    // =====================================================
+
+    std::vector<TensorBufferPtr>
+        inputBuffers;
+
+    if (!createTensorBuffers(
+            graph->inputTensors,
+            graph->numInputTensors,
+            inputBuffers,
+            "input"
+        )) {
+
+        return 1;
+    }
+
+    // =====================================================
+    // Allocate runtime output tensors
+    // =====================================================
+
+    std::vector<TensorBufferPtr>
+        outputBuffers;
+
+    if (!createTensorBuffers(
+            graph->outputTensors,
+            graph->numOutputTensors,
+            outputBuffers,
+            "output"
+        )) {
+
+        return 1;
+    }
+
+    // =====================================================
+    // Summary
+    // =====================================================
+
+    const uint64_t inputBytes =
+        totalBufferBytes(
+            inputBuffers
+        );
+
+    const uint64_t outputBytes =
+        totalBufferBytes(
+            outputBuffers
+        );
+
+    std::cout
         << "\n"
-        << "[PASS] graph metadata inspection complete\n";
+        << "[INFO] ==============================\n";
+
+    std::cout
+        << "[INFO] input buffer bytes: "
+        << inputBytes
+        << '\n';
+
+    std::cout
+        << "[INFO] output buffer bytes: "
+        << outputBytes
+        << '\n';
+
+    std::cout
+        << "[INFO] total runtime I/O bytes: "
+        << (
+            inputBytes +
+            outputBytes
+        )
+        << '\n';
+
+    std::cout
+        << "[PASS] QNN tensor buffers ready\n";
 
     return 0;
 }
