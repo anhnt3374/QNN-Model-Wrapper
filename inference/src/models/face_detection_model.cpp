@@ -5,9 +5,9 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <cstring>
 #include <sstream>
 
 namespace models {
@@ -32,10 +32,6 @@ bool FaceDetectionModel::initialize(
 
     lastError_.clear();
 
-    // =====================================================
-    // Load generated SCRFD model
-    // =====================================================
-
     if (!model_.load(
             modelPath
         )) {
@@ -46,10 +42,6 @@ bool FaceDetectionModel::initialize(
 
         return false;
     }
-
-    // =====================================================
-    // Compose graph
-    // =====================================================
 
     if (!model_.composeGraphs()) {
 
@@ -76,10 +68,6 @@ bool FaceDetectionModel::initialize(
 
         return false;
     }
-
-    // =====================================================
-    // Finalize graph
-    // =====================================================
 
     if (!model_.finalizeGraphs()) {
 
@@ -137,10 +125,6 @@ bool FaceDetectionModel::initialize(
         return false;
     }
 
-    // =====================================================
-    // Allocate persistent I/O buffers
-    // =====================================================
-
     if (!allocateRuntimeBuffers()) {
 
         shutdown();
@@ -148,20 +132,12 @@ bool FaceDetectionModel::initialize(
         return false;
     }
 
-    // =====================================================
-    // Validate SCRFD input
-    // =====================================================
-
     if (!validateScrfdInput()) {
 
         shutdown();
 
         return false;
     }
-
-    // =====================================================
-    // Build persistent graphExecute tensor arrays
-    // =====================================================
 
     if (!buildExecutionTensorArrays()) {
 
@@ -201,10 +177,6 @@ bool FaceDetectionModel::allocateRuntimeBuffers()
         graph->numOutputTensors
     );
 
-    // =====================================================
-    // Input
-    // =====================================================
-
     for (uint32_t i = 0;
          i < graph->numInputTensors;
          ++i) {
@@ -235,10 +207,6 @@ bool FaceDetectionModel::allocateRuntimeBuffers()
             std::move(buffer)
         );
     }
-
-    // =====================================================
-    // Outputs
-    // =====================================================
 
     for (uint32_t i = 0;
          i < graph->numOutputTensors;
@@ -496,10 +464,6 @@ bool FaceDetectionModel::preprocess(
         return false;
     }
 
-    // =====================================================
-    // Aspect-ratio preserving resize
-    // =====================================================
-
     const double imageRatio =
         static_cast<double>(
             originalHeight
@@ -568,10 +532,6 @@ bool FaceDetectionModel::preprocess(
             originalHeight
         );
 
-    // =====================================================
-    // Resize
-    // =====================================================
-
     cv::Mat resized;
 
     cv::resize(
@@ -585,10 +545,6 @@ bool FaceDetectionModel::preprocess(
         0.0,
         cv::INTER_LINEAR
     );
-
-    // =====================================================
-    // Top-left letterbox
-    // =====================================================
 
     cv::Mat canvas =
         cv::Mat::zeros(
@@ -608,10 +564,6 @@ bool FaceDetectionModel::preprocess(
         )
     );
 
-    // =====================================================
-    // BGR -> RGB
-    // =====================================================
-
     cv::Mat rgb;
 
     cv::cvtColor(
@@ -619,10 +571,6 @@ bool FaceDetectionModel::preprocess(
         rgb,
         cv::COLOR_BGR2RGB
     );
-
-    // =====================================================
-    // QNN input quantization
-    // =====================================================
 
     inference::QnnTensorBuffer&
         input =
@@ -790,6 +738,115 @@ bool FaceDetectionModel::decodeStride8(
 {
     proposals.clear();
 
+    if (!decodeLevel(
+            8,
+            "score_8",
+            "bbox_8",
+            "kps_8",
+            scoreThreshold,
+            proposals
+        )) {
+
+        return false;
+    }
+
+    lastError_.clear();
+
+    return true;
+}
+
+bool FaceDetectionModel::decodeAll(
+    std::vector<FaceDetectionProposal>& proposals,
+    float scoreThreshold
+)
+{
+    proposals.clear();
+
+    if (!std::isfinite(
+            scoreThreshold
+        )) {
+
+        lastError_ =
+            "Score threshold is not finite";
+
+        return false;
+    }
+
+    // Maximum possible number before threshold:
+    //
+    // stride 8  = 12800
+    // stride 16 = 3200
+    // stride 32 = 800
+    //
+    // total     = 16800
+    proposals.reserve(
+        16800
+    );
+
+    if (!decodeLevel(
+            8,
+            "score_8",
+            "bbox_8",
+            "kps_8",
+            scoreThreshold,
+            proposals
+        )) {
+
+        return false;
+    }
+
+    if (!decodeLevel(
+            16,
+            "score_16",
+            "bbox_16",
+            "kps_16",
+            scoreThreshold,
+            proposals
+        )) {
+
+        return false;
+    }
+
+    if (!decodeLevel(
+            32,
+            "score_32",
+            "bbox_32",
+            "kps_32",
+            scoreThreshold,
+            proposals
+        )) {
+
+        return false;
+    }
+
+    // Same ordering as Python:
+    //
+    // order = scores.argsort()[::-1]
+    std::sort(
+        proposals.begin(),
+        proposals.end(),
+        [](
+            const FaceDetectionProposal& lhs,
+            const FaceDetectionProposal& rhs
+        ) {
+            return lhs.score > rhs.score;
+        }
+    );
+
+    lastError_.clear();
+
+    return true;
+}
+
+bool FaceDetectionModel::decodeLevel(
+    int stride,
+    const char* scoreTensorName,
+    const char* bboxTensorName,
+    const char* kpsTensorName,
+    float scoreThreshold,
+    std::vector<FaceDetectionProposal>& proposals
+)
+{
     if (!ready()) {
 
         lastError_ =
@@ -808,44 +865,48 @@ bool FaceDetectionModel::decodeStride8(
         return false;
     }
 
-    // =====================================================
-    // Find model outputs by NAME, not output index.
-    //
-    // This prevents the decoder from depending on the
-    // generated model's output ordering.
-    // =====================================================
+    if (stride <= 0 ||
+        INPUT_WIDTH % stride != 0 ||
+        INPUT_HEIGHT % stride != 0) {
+
+        lastError_ =
+            "Invalid SCRFD stride";
+
+        return false;
+    }
 
     const inference::QnnTensorBuffer*
         scoreBuffer =
             outputBufferByName(
-                "score_8"
+                scoreTensorName
             );
 
     const inference::QnnTensorBuffer*
         bboxBuffer =
             outputBufferByName(
-                "bbox_8"
+                bboxTensorName
             );
 
     const inference::QnnTensorBuffer*
         kpsBuffer =
             outputBufferByName(
-                "kps_8"
+                kpsTensorName
             );
 
     if (scoreBuffer == nullptr ||
         bboxBuffer == nullptr ||
         kpsBuffer == nullptr) {
 
-        lastError_ =
-            "SCRFD stride-8 output tensors are missing";
+        std::ostringstream oss;
+
+        oss
+            << "SCRFD output tensors missing for stride "
+            << stride;
+
+        lastError_ = oss.str();
 
         return false;
     }
-
-    // =====================================================
-    // Native runtime type expected by this generated model.
-    // =====================================================
 
     if (dataType(
             scoreBuffer->tensor()
@@ -860,47 +921,44 @@ bool FaceDetectionModel::decodeStride8(
         ) !=
             QNN_DATATYPE_UFIXED_POINT_16) {
 
-        lastError_ =
-            "SCRFD stride-8 outputs must be "
-            "UFIXED_POINT_16";
+        std::ostringstream oss;
+
+        oss
+            << "SCRFD stride "
+            << stride
+            << " outputs must be UFIXED_POINT_16";
+
+        lastError_ = oss.str();
 
         return false;
     }
 
-    // =====================================================
-    // 640 / 8 = 80
-    //
-    // 80 * 80 * 2 anchors
-    // = 12800 candidates
-    // =====================================================
+    const uint64_t gridWidth =
+        static_cast<uint64_t>(
+            INPUT_WIDTH / stride
+        );
 
-    constexpr int STRIDE = 8;
+    const uint64_t gridHeight =
+        static_cast<uint64_t>(
+            INPUT_HEIGHT / stride
+        );
 
-    constexpr uint64_t GRID_WIDTH =
-        INPUT_WIDTH
-        /
-        STRIDE;
-
-    constexpr uint64_t GRID_HEIGHT =
-        INPUT_HEIGHT
-        /
-        STRIDE;
-
-    constexpr uint64_t CANDIDATE_COUNT =
-        GRID_WIDTH
+    const uint64_t candidateCount =
+        gridWidth
         *
-        GRID_HEIGHT
+        gridHeight
         *
         NUM_ANCHORS;
 
     if (scoreBuffer->elementCount() !=
-        CANDIDATE_COUNT) {
+        candidateCount) {
 
         std::ostringstream oss;
 
         oss
-            << "score_8 element count mismatch. expected="
-            << CANDIDATE_COUNT
+            << scoreTensorName
+            << " element count mismatch. expected="
+            << candidateCount
             << ", actual="
             << scoreBuffer->elementCount();
 
@@ -910,13 +968,14 @@ bool FaceDetectionModel::decodeStride8(
     }
 
     if (bboxBuffer->elementCount() !=
-        CANDIDATE_COUNT * 4) {
+        candidateCount * 4) {
 
         std::ostringstream oss;
 
         oss
-            << "bbox_8 element count mismatch. expected="
-            << CANDIDATE_COUNT * 4
+            << bboxTensorName
+            << " element count mismatch. expected="
+            << candidateCount * 4
             << ", actual="
             << bboxBuffer->elementCount();
 
@@ -926,13 +985,14 @@ bool FaceDetectionModel::decodeStride8(
     }
 
     if (kpsBuffer->elementCount() !=
-        CANDIDATE_COUNT * 10) {
+        candidateCount * 10) {
 
         std::ostringstream oss;
 
         oss
-            << "kps_8 element count mismatch. expected="
-            << CANDIDATE_COUNT * 10
+            << kpsTensorName
+            << " element count mismatch. expected="
+            << candidateCount * 10
             << ", actual="
             << kpsBuffer->elementCount();
 
@@ -940,10 +1000,6 @@ bool FaceDetectionModel::decodeStride8(
 
         return false;
     }
-
-    // =====================================================
-    // Quantization metadata
-    // =====================================================
 
     const Qnn_QuantizeParams_t*
         scoreQuant =
@@ -967,8 +1023,14 @@ bool FaceDetectionModel::decodeStride8(
         bboxQuant == nullptr ||
         kpsQuant == nullptr) {
 
-        lastError_ =
-            "SCRFD stride-8 quantization metadata is missing";
+        std::ostringstream oss;
+
+        oss
+            << "SCRFD stride "
+            << stride
+            << " quantization metadata is missing";
+
+        lastError_ = oss.str();
 
         return false;
     }
@@ -980,38 +1042,14 @@ bool FaceDetectionModel::decodeStride8(
         kpsQuant->quantizationEncoding !=
             QNN_QUANTIZATION_ENCODING_SCALE_OFFSET) {
 
-        lastError_ =
-            "SCRFD stride-8 outputs must use "
-            "SCALE_OFFSET quantization";
+        std::ostringstream oss;
 
-        return false;
-    }
+        oss
+            << "SCRFD stride "
+            << stride
+            << " outputs must use SCALE_OFFSET";
 
-    // =====================================================
-    // Native buffers
-    // =====================================================
-
-    const auto* scoreRaw =
-        static_cast<const uint16_t*>(
-            scoreBuffer->data()
-        );
-
-    const auto* bboxRaw =
-        static_cast<const uint16_t*>(
-            bboxBuffer->data()
-        );
-
-    const auto* kpsRaw =
-        static_cast<const uint16_t*>(
-            kpsBuffer->data()
-        );
-
-    if (scoreRaw == nullptr ||
-        bboxRaw == nullptr ||
-        kpsRaw == nullptr) {
-
-        lastError_ =
-            "SCRFD stride-8 runtime buffer is null";
+        lastError_ = oss.str();
 
         return false;
     }
@@ -1046,35 +1084,63 @@ bool FaceDetectionModel::decodeStride8(
             ->scaleOffsetEncoding
             .offset;
 
-    // Avoid repeated vector reallocation when many
-    // proposals pass threshold.
-    proposals.reserve(
-        CANDIDATE_COUNT
-    );
+    if (!std::isfinite(scoreScale) ||
+        scoreScale <= 0.0F ||
+        !std::isfinite(bboxScale) ||
+        bboxScale <= 0.0F ||
+        !std::isfinite(kpsScale) ||
+        kpsScale <= 0.0F) {
 
-    // =====================================================
-    // Python equivalent:
-    //
-    // centers:
-    //   yy, xx = np.mgrid[0:h, 0:w]
-    //   centers = [xx, yy] * stride
-    //   centers = repeat(centers, 2)
-    //
-    // candidate:
-    //
-    // gridIndex = candidateIndex / 2
-    // =====================================================
+        std::ostringstream oss;
+
+        oss
+            << "SCRFD stride "
+            << stride
+            << " contains invalid quantization scale";
+
+        lastError_ = oss.str();
+
+        return false;
+    }
+
+    const auto* scoreRaw =
+        static_cast<const uint16_t*>(
+            scoreBuffer->data()
+        );
+
+    const auto* bboxRaw =
+        static_cast<const uint16_t*>(
+            bboxBuffer->data()
+        );
+
+    const auto* kpsRaw =
+        static_cast<const uint16_t*>(
+            kpsBuffer->data()
+        );
+
+    if (scoreRaw == nullptr ||
+        bboxRaw == nullptr ||
+        kpsRaw == nullptr) {
+
+        std::ostringstream oss;
+
+        oss
+            << "SCRFD stride "
+            << stride
+            << " runtime buffer is null";
+
+        lastError_ = oss.str();
+
+        return false;
+    }
 
     for (uint64_t candidateIndex = 0;
-         candidateIndex < CANDIDATE_COUNT;
+         candidateIndex < candidateCount;
          ++candidateIndex) {
 
-        // -------------------------------------------------
-        // Score first.
-        //
-        // Candidates below threshold never need bbox/kps
-        // dequantization.
-        // -------------------------------------------------
+        // =================================================
+        // Score
+        // =================================================
 
         const float score =
             inference::dequantizeScaleOffset(
@@ -1091,6 +1157,15 @@ bool FaceDetectionModel::decodeStride8(
             continue;
         }
 
+        // =================================================
+        // Anchor center
+        //
+        // Python:
+        //
+        // centers = [xx, yy] * stride
+        // repeat each center twice.
+        // =================================================
+
         const uint64_t gridIndex =
             candidateIndex
             /
@@ -1099,37 +1174,34 @@ bool FaceDetectionModel::decodeStride8(
         const uint64_t gridX =
             gridIndex
             %
-            GRID_WIDTH;
+            gridWidth;
 
         const uint64_t gridY =
             gridIndex
             /
-            GRID_WIDTH;
+            gridWidth;
 
         const float centerX =
             static_cast<float>(
-                gridX * STRIDE
+                gridX
+            )
+            *
+            static_cast<float>(
+                stride
             );
 
         const float centerY =
             static_cast<float>(
-                gridY * STRIDE
+                gridY
+            )
+            *
+            static_cast<float>(
+                stride
             );
 
-        // -------------------------------------------------
-        // bbox output:
-        //
-        // [left, top, right, bottom]
-        //
-        // Python:
-        //
-        // bbox = bbox * stride
-        //
-        // x1 = cx - left
-        // y1 = cy - top
-        // x2 = cx + right
-        // y2 = cy + bottom
-        // -------------------------------------------------
+        // =================================================
+        // BBox
+        // =================================================
 
         const uint64_t bboxBase =
             candidateIndex * 4;
@@ -1143,7 +1215,9 @@ bool FaceDetectionModel::decodeStride8(
                 bboxOffset
             )
             *
-            STRIDE;
+            static_cast<float>(
+                stride
+            );
 
         const float top =
             inference::dequantizeScaleOffset(
@@ -1154,7 +1228,9 @@ bool FaceDetectionModel::decodeStride8(
                 bboxOffset
             )
             *
-            STRIDE;
+            static_cast<float>(
+                stride
+            );
 
         const float right =
             inference::dequantizeScaleOffset(
@@ -1165,7 +1241,9 @@ bool FaceDetectionModel::decodeStride8(
                 bboxOffset
             )
             *
-            STRIDE;
+            static_cast<float>(
+                stride
+            );
 
         const float bottom =
             inference::dequantizeScaleOffset(
@@ -1176,7 +1254,9 @@ bool FaceDetectionModel::decodeStride8(
                 bboxOffset
             )
             *
-            STRIDE;
+            static_cast<float>(
+                stride
+            );
 
         FaceDetectionProposal proposal;
 
@@ -1203,16 +1283,9 @@ bool FaceDetectionModel::decodeStride8(
             +
             bottom;
 
-        // -------------------------------------------------
-        // Keypoints
-        //
-        // Python:
-        //
-        // kps = kps * stride
-        //
-        // point.x = center.x + kps_x
-        // point.y = center.y + kps_y
-        // -------------------------------------------------
+        // =================================================
+        // 5 keypoints
+        // =================================================
 
         const uint64_t kpsBase =
             candidateIndex * 10;
@@ -1238,7 +1311,9 @@ bool FaceDetectionModel::decodeStride8(
                     kpsOffset
                 )
                 *
-                STRIDE;
+                static_cast<float>(
+                    stride
+                );
 
             const float relativeY =
                 inference::dequantizeScaleOffset(
@@ -1249,7 +1324,9 @@ bool FaceDetectionModel::decodeStride8(
                     kpsOffset
                 )
                 *
-                STRIDE;
+                static_cast<float>(
+                    stride
+                );
 
             proposal.landmarks[
                 pointIndex * 2
@@ -1270,8 +1347,6 @@ bool FaceDetectionModel::decodeStride8(
             proposal
         );
     }
-
-    lastError_.clear();
 
     return true;
 }

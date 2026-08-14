@@ -48,6 +48,30 @@ bool proposalIsFinite(
     return true;
 }
 
+bool proposalsAreSortedDescending(
+    const std::vector<
+        models::FaceDetectionProposal
+    >& proposals
+)
+{
+    if (proposals.size() < 2) {
+        return true;
+    }
+
+    for (std::size_t i = 1;
+         i < proposals.size();
+         ++i) {
+
+        if (proposals[i - 1].score <
+            proposals[i].score) {
+
+            return false;
+        }
+    }
+
+    return true;
+}
+
 void printProposal(
     const models::FaceDetectionProposal& proposal,
     std::size_t index
@@ -142,10 +166,6 @@ int main(
         return 1;
     }
 
-    // =====================================================
-    // Real image
-    // =====================================================
-
     const char* imagePath =
         argv[1];
 
@@ -178,7 +198,7 @@ int main(
         << '\n';
 
     // =====================================================
-    // QNN backend
+    // Backend
     // =====================================================
 
     inference::QnnBackend backend;
@@ -239,7 +259,7 @@ int main(
         << "[PASS] QNN backend ready\n";
 
     // =====================================================
-    // SCRFD model
+    // FaceDetectionModel
     // =====================================================
 
     models::FaceDetectionModel model(
@@ -261,10 +281,6 @@ int main(
     std::cout
         << "[PASS] FaceDetectionModel initialized\n";
 
-    // =====================================================
-    // Preprocess
-    // =====================================================
-
     if (!model.preprocess(
             image
         )) {
@@ -280,10 +296,6 @@ int main(
     std::cout
         << "[PASS] real image preprocessed\n";
 
-    // =====================================================
-    // Inference
-    // =====================================================
-
     if (!model.infer()) {
 
         std::cerr
@@ -298,72 +310,98 @@ int main(
         << "[PASS] FaceDetectionModel inference succeeded\n";
 
     // =====================================================
-    // 5H.3-A
+    // 5H.4-A
     //
     // threshold = 0
     //
-    // Every stride-8 candidate should be returned.
+    // Every candidate from all 3 levels must survive.
     //
-    // 80 * 80 * 2 = 12800
+    // 12800 + 3200 + 800 = 16800.
     // =====================================================
 
     std::vector<
         models::FaceDetectionProposal
-    > allStride8;
+    > allProposals;
 
-    if (!model.decodeStride8(
-            allStride8,
+    if (!model.decodeAll(
+            allProposals,
             0.0F
         )) {
 
         std::cerr
-            << "[ERROR] decodeStride8(0.0): "
+            << "[ERROR] decodeAll(0.0): "
             << model.lastError()
             << '\n';
 
         return 1;
     }
 
-    if (allStride8.size() != 12800) {
+    constexpr std::size_t EXPECTED_ALL =
+        16800;
+
+    if (allProposals.size() !=
+        EXPECTED_ALL) {
 
         std::cerr
-            << "[ERROR] stride-8 candidate count mismatch. "
-            << "expected=12800, actual="
-            << allStride8.size()
+            << "[ERROR] all-level candidate count mismatch. "
+            << "expected="
+            << EXPECTED_ALL
+            << ", actual="
+            << allProposals.size()
             << '\n';
 
         return 1;
     }
 
     std::cout
-        << "[PASS] stride-8 produced 12800 candidates\n";
+        << "[PASS] all SCRFD levels produced "
+        << EXPECTED_ALL
+        << " candidates\n";
 
     // =====================================================
-    // Validate values
+    // Every decoded value should be finite.
     // =====================================================
 
     for (const auto& proposal :
-         allStride8) {
+         allProposals) {
 
         if (!proposalIsFinite(
                 proposal
             )) {
 
             std::cerr
-                << "[ERROR] stride-8 proposal "
-                << "contains non-finite values\n";
+                << "[ERROR] decoded proposal contains "
+                << "non-finite value\n";
 
             return 1;
         }
     }
 
     std::cout
-        << "[PASS] stride-8 decoded values are finite\n";
+        << "[PASS] all decoded values are finite\n";
 
     // =====================================================
-    // 5H.3-B
+    // decodeAll() must sort descending by score.
+    // =====================================================
+
+    if (!proposalsAreSortedDescending(
+            allProposals
+        )) {
+
+        std::cerr
+            << "[ERROR] proposals are not sorted "
+            << "by descending score\n";
+
+        return 1;
+    }
+
+    std::cout
+        << "[PASS] proposals sorted by descending score\n";
+
+    // =====================================================
+    // 5H.4-B
     //
-    // Same threshold used by working Python postprocess.
+    // Same threshold as working Python.
     // =====================================================
 
     constexpr float SCORE_THRESHOLD =
@@ -371,15 +409,15 @@ int main(
 
     std::vector<
         models::FaceDetectionProposal
-    > filteredStride8;
+    > filteredProposals;
 
-    if (!model.decodeStride8(
-            filteredStride8,
+    if (!model.decodeAll(
+            filteredProposals,
             SCORE_THRESHOLD
         )) {
 
         std::cerr
-            << "[ERROR] decodeStride8(0.5): "
+            << "[ERROR] decodeAll(0.5): "
             << model.lastError()
             << '\n';
 
@@ -387,14 +425,13 @@ int main(
     }
 
     for (const auto& proposal :
-         filteredStride8) {
+         filteredProposals) {
 
         if (proposal.score <
             SCORE_THRESHOLD) {
 
             std::cerr
-                << "[ERROR] proposal below "
-                << "score threshold\n";
+                << "[ERROR] proposal below score threshold\n";
 
             return 1;
         }
@@ -404,37 +441,59 @@ int main(
             )) {
 
             std::cerr
-                << "[ERROR] filtered proposal "
-                << "contains non-finite values\n";
+                << "[ERROR] filtered proposal contains "
+                << "non-finite value\n";
 
             return 1;
         }
     }
 
-    std::cout
-        << "[PASS] stride-8 score threshold applied\n";
+    if (!proposalsAreSortedDescending(
+            filteredProposals
+        )) {
+
+        std::cerr
+            << "[ERROR] filtered proposals are not sorted\n";
+
+        return 1;
+    }
 
     std::cout
-        << "[INFO] stride-8 candidates:\n";
+        << "[PASS] score threshold 0.5 applied\n";
 
     std::cout
-        << "       before threshold: "
-        << allStride8.size()
+        << "[PASS] filtered proposals remain sorted\n";
+
+    // =====================================================
+    // Summary
+    // =====================================================
+
+    std::cout
+        << "[INFO] SCRFD proposals:\n";
+
+    std::cout
+        << "       stride 8 candidates : 12800\n";
+
+    std::cout
+        << "       stride 16 candidates: 3200\n";
+
+    std::cout
+        << "       stride 32 candidates: 800\n";
+
+    std::cout
+        << "       total before threshold: "
+        << allProposals.size()
         << '\n';
 
     std::cout
         << "       after threshold 0.5: "
-        << filteredStride8.size()
+        << filteredProposals.size()
         << '\n';
 
-    // =====================================================
-    // Print first few proposals for manual comparison
-    // with Python if needed.
-    // =====================================================
-
+    // Print highest-confidence proposals.
     const std::size_t printCount =
-        filteredStride8.size() < 5
-            ? filteredStride8.size()
+        filteredProposals.size() < 5
+            ? filteredProposals.size()
             : 5;
 
     for (std::size_t i = 0;
@@ -442,13 +501,13 @@ int main(
          ++i) {
 
         printProposal(
-            filteredStride8[i],
+            filteredProposals[i],
             i
         );
     }
 
     std::cout
-        << "[PASS] 5H.3 SCRFD stride-8 "
+        << "[PASS] 5H.4 SCRFD all-level "
         << "decode test complete\n";
 
     return 0;

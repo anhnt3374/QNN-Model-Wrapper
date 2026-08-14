@@ -70,7 +70,18 @@ public:
 
     bool infer();
 
+    // Kept for the 5H.3 stride-8 checkpoint.
     bool decodeStride8(
+        std::vector<FaceDetectionProposal>& proposals,
+        float scoreThreshold = 0.5F
+    );
+
+    // 5H.4:
+    //
+    // decode stride 8 + 16 + 32,
+    // merge proposals,
+    // sort by confidence descending.
+    bool decodeAll(
         std::vector<FaceDetectionProposal>& proposals,
         float scoreThreshold = 0.5F
     );
@@ -99,6 +110,15 @@ private:
     bool buildExecutionTensorArrays();
 
     bool validateScrfdInput();
+
+    bool decodeLevel(
+        int stride,
+        const char* scoreTensorName,
+        const char* bboxTensorName,
+        const char* kpsTensorName,
+        float scoreThreshold,
+        std::vector<FaceDetectionProposal>& proposals
+    );
 
     const inference::QnnTensorBuffer*
     outputBufferByName(
