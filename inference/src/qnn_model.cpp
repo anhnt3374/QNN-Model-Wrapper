@@ -26,7 +26,7 @@ bool QnnModel::load(
     shutdown();
 
     // =====================================================
-    // 1. Create QNN context
+    // 1. Create context
     // =====================================================
 
     if (!context_.create()) {
@@ -52,7 +52,7 @@ bool QnnModel::load(
     }
 
     // =====================================================
-    // 3. Resolve QnnModel_composeGraphs
+    // 3. Resolve compose function
     // =====================================================
 
     composeGraphsFn_ =
@@ -72,7 +72,7 @@ bool QnnModel::load(
     }
 
     // =====================================================
-    // 4. Resolve QnnModel_freeGraphsInfo
+    // 4. Resolve graph metadata free function
     // =====================================================
 
     freeGraphsInfoFn_ =
@@ -107,7 +107,6 @@ bool QnnModel::composeGraphs()
         return false;
     }
 
-    // Already composed.
     if (graphsInfo_ != nullptr &&
         graphCount_ > 0) {
 
@@ -116,6 +115,7 @@ bool QnnModel::composeGraphs()
 
     graphsInfo_ = nullptr;
     graphCount_ = 0;
+
     graphFinalized_.clear();
 
     const qnn_wrapper_api::ModelError_t result =
@@ -124,17 +124,14 @@ bool QnnModel::composeGraphs()
             backend_.interface(),
             context_.handle(),
 
-            // No graph config overrides.
             nullptr,
             0,
 
             &graphsInfo_,
             &graphCount_,
 
-            // Debug disabled.
             false,
 
-            // No custom logger yet.
             nullptr,
             QNN_LOG_LEVEL_ERROR
         );
@@ -208,15 +205,10 @@ bool QnnModel::finalizeGraphs()
         );
     }
 
-    // =====================================================
-    // Finalize every graph
-    // =====================================================
-
     for (uint32_t i = 0;
          i < graphCount_;
          ++i) {
 
-        // Already finalized.
         if (graphFinalized_[i] != 0) {
             continue;
         }
@@ -248,11 +240,7 @@ bool QnnModel::finalizeGraphs()
         const Qnn_ErrorHandle_t result =
             backend_.interface().graphFinalize(
                 graphsInfo_[i]->graph,
-
-                // No profiling yet.
                 nullptr,
-
-                // No cancellation/timeout signal yet.
                 nullptr
             );
 
@@ -288,6 +276,178 @@ bool QnnModel::finalizeGraphs()
     return true;
 }
 
+bool QnnModel::executeGraph(
+    uint32_t graphIndex,
+    const Qnn_Tensor_t* inputTensors,
+    uint32_t inputCount,
+    Qnn_Tensor_t* outputTensors,
+    uint32_t outputCount
+)
+{
+    // =====================================================
+    // Validate graph
+    // =====================================================
+
+    if (!graphsReady()) {
+        lastError_ =
+            "Graphs are not ready";
+
+        return false;
+    }
+
+    if (graphIndex >= graphCount_) {
+        std::ostringstream oss;
+
+        oss
+            << "Invalid graph index: "
+            << graphIndex;
+
+        lastError_ = oss.str();
+
+        return false;
+    }
+
+    if (!graphFinalized(
+            graphIndex
+        )) {
+
+        std::ostringstream oss;
+
+        oss
+            << "Graph["
+            << graphIndex
+            << "] is not finalized";
+
+        lastError_ = oss.str();
+
+        return false;
+    }
+
+    const auto* graphInfo =
+        graphsInfo_[graphIndex];
+
+    if (graphInfo == nullptr) {
+        lastError_ =
+            "GraphInfo is null";
+
+        return false;
+    }
+
+    if (graphInfo->graph == nullptr) {
+        lastError_ =
+            "Graph handle is null";
+
+        return false;
+    }
+
+    // =====================================================
+    // Validate input tensors
+    // =====================================================
+
+    if (inputCount !=
+        graphInfo->numInputTensors) {
+
+        std::ostringstream oss;
+
+        oss
+            << "Input tensor count mismatch. expected="
+            << graphInfo->numInputTensors
+            << ", actual="
+            << inputCount;
+
+        lastError_ = oss.str();
+
+        return false;
+    }
+
+    if (inputCount > 0 &&
+        inputTensors == nullptr) {
+
+        lastError_ =
+            "Input tensor array is null";
+
+        return false;
+    }
+
+    // =====================================================
+    // Validate output tensors
+    // =====================================================
+
+    if (outputCount !=
+        graphInfo->numOutputTensors) {
+
+        std::ostringstream oss;
+
+        oss
+            << "Output tensor count mismatch. expected="
+            << graphInfo->numOutputTensors
+            << ", actual="
+            << outputCount;
+
+        lastError_ = oss.str();
+
+        return false;
+    }
+
+    if (outputCount > 0 &&
+        outputTensors == nullptr) {
+
+        lastError_ =
+            "Output tensor array is null";
+
+        return false;
+    }
+
+    // =====================================================
+    // Execute graph
+    // =====================================================
+
+    const Qnn_ErrorHandle_t result =
+        backend_.interface().graphExecute(
+            graphInfo->graph,
+
+            inputTensors,
+            inputCount,
+
+            outputTensors,
+            outputCount,
+
+            // No profiling yet.
+            nullptr,
+
+            // No timeout/cancellation signal yet.
+            nullptr
+        );
+
+    if (result != QNN_SUCCESS) {
+        std::ostringstream oss;
+
+        oss
+            << "graphExecute failed for graph["
+            << graphIndex
+            << "]";
+
+        if (graphInfo->graphName != nullptr) {
+            oss
+                << " ("
+                << graphInfo->graphName
+                << ")";
+        }
+
+        oss
+            << ". error="
+            << result;
+
+        lastError_ = oss.str();
+
+        return false;
+    }
+
+    lastError_.clear();
+
+    return true;
+}
+
 void QnnModel::releaseGraphs()
 {
     graphFinalized_.clear();
@@ -312,10 +472,6 @@ void QnnModel::releaseGraphs()
 
 void QnnModel::shutdown()
 {
-    // QnnModel_freeGraphsInfo is implemented inside
-    // the generated model .so, therefore graph metadata
-    // must be released before dlclose().
-
     releaseGraphs();
 
     composeGraphsFn_ = nullptr;
@@ -393,7 +549,9 @@ bool QnnModel::graphFinalized(
     uint32_t index
 ) const noexcept
 {
-    if (index >= graphFinalized_.size()) {
+    if (index >=
+        graphFinalized_.size()) {
+
         return false;
     }
 

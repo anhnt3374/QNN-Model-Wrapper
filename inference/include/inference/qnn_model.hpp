@@ -32,6 +32,14 @@ public:
 
     bool finalizeGraphs();
 
+    bool executeGraph(
+        uint32_t graphIndex,
+        const Qnn_Tensor_t* inputTensors,
+        uint32_t inputCount,
+        Qnn_Tensor_t* outputTensors,
+        uint32_t outputCount
+    );
+
     void shutdown();
 
     bool ready() const noexcept;

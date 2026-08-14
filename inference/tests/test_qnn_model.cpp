@@ -2,9 +2,14 @@
 #include "inference/qnn_model.hpp"
 #include "inference/qnn_tensor_buffer.hpp"
 
+#include <QnnTypes.h>
+
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -14,6 +19,10 @@ using TensorBufferPtr =
     std::unique_ptr<
         inference::QnnTensorBuffer
     >;
+
+// =========================================================
+// Tensor buffer creation
+// =========================================================
 
 bool createTensorBuffers(
     const Qnn_Tensor_t* tensors,
@@ -75,36 +84,9 @@ bool createTensorBuffers(
             << '\n';
 
         std::cout
-            << "       elements: "
-            << buffer->elementCount()
-            << '\n';
-
-        std::cout
-            << "       bytes / element: "
-            << buffer->bytesPerElement()
-            << '\n';
-
-        std::cout
             << "       buffer bytes: "
             << buffer->byteSize()
             << '\n';
-
-        std::cout
-            << "       data pointer: "
-            << buffer->data()
-            << '\n';
-
-        if (buffer->data() == nullptr) {
-
-            std::cerr
-                << "[ERROR] "
-                << prefix
-                << "["
-                << i
-                << "] has null buffer\n";
-
-            return false;
-        }
 
         buffers.push_back(
             std::move(buffer)
@@ -114,21 +96,289 @@ bool createTensorBuffers(
     return true;
 }
 
-uint64_t totalBufferBytes(
+// =========================================================
+// Build contiguous Qnn_Tensor_t arrays
+//
+// graphExecute expects contiguous arrays of Qnn_Tensor_t.
+// QnnTensorBuffer objects themselves are owned separately.
+// =========================================================
+
+std::vector<Qnn_Tensor_t>
+buildTensorArray(
     const std::vector<TensorBufferPtr>& buffers
 )
 {
-    uint64_t total = 0;
+    std::vector<Qnn_Tensor_t>
+        tensors;
+
+    tensors.reserve(
+        buffers.size()
+    );
 
     for (const auto& buffer :
          buffers) {
 
-        total +=
-            buffer->byteSize();
+        tensors.push_back(
+            buffer->tensor()
+        );
     }
 
-    return total;
+    return tensors;
 }
+
+// =========================================================
+// Access tensor metadata
+// =========================================================
+
+Qnn_DataType_t getDataType(
+    const Qnn_Tensor_t& tensor
+)
+{
+    switch (tensor.version) {
+
+    case QNN_TENSOR_VERSION_1:
+        return tensor.v1.dataType;
+
+    case QNN_TENSOR_VERSION_2:
+        return tensor.v2.dataType;
+
+    default:
+        return QNN_DATATYPE_UNDEFINED;
+    }
+}
+
+const Qnn_QuantizeParams_t*
+getQuantization(
+    const Qnn_Tensor_t& tensor
+)
+{
+    switch (tensor.version) {
+
+    case QNN_TENSOR_VERSION_1:
+        return &tensor.v1.quantizeParams;
+
+    case QNN_TENSOR_VERSION_2:
+        return &tensor.v2.quantizeParams;
+
+    default:
+        return nullptr;
+    }
+}
+
+// =========================================================
+// SCRFD test input
+//
+// Real zero:
+//
+// float = (q + offset) * scale
+//
+// 0 = q + offset
+//
+// q = -offset
+//
+// SCRFD input:
+// offset = -32768
+//
+// therefore:
+// q = 32768
+// =========================================================
+
+bool fillFaceDetectorTestInput(
+    inference::QnnTensorBuffer& buffer
+)
+{
+    const Qnn_Tensor_t& tensor =
+        buffer.tensor();
+
+    const Qnn_DataType_t dataType =
+        getDataType(
+            tensor
+        );
+
+    if (dataType !=
+        QNN_DATATYPE_UFIXED_POINT_16) {
+
+        std::cerr
+            << "[ERROR] SCRFD test expects "
+            << "UFIXED_POINT_16 input\n";
+
+        return false;
+    }
+
+    const Qnn_QuantizeParams_t* quantization =
+        getQuantization(
+            tensor
+        );
+
+    if (quantization == nullptr) {
+
+        std::cerr
+            << "[ERROR] SCRFD input "
+            << "quantization metadata missing\n";
+
+        return false;
+    }
+
+    if (quantization->quantizationEncoding !=
+        QNN_QUANTIZATION_ENCODING_SCALE_OFFSET) {
+
+        std::cerr
+            << "[ERROR] SCRFD test expects "
+            << "SCALE_OFFSET quantization\n";
+
+        return false;
+    }
+
+    const int64_t quantizedZero =
+        -static_cast<int64_t>(
+            quantization
+                ->scaleOffsetEncoding
+                .offset
+        );
+
+    if (quantizedZero < 0 ||
+        quantizedZero >
+            std::numeric_limits<uint16_t>::max()) {
+
+        std::cerr
+            << "[ERROR] quantized zero is "
+            << "outside uint16 range: "
+            << quantizedZero
+            << '\n';
+
+        return false;
+    }
+
+    auto* data =
+        static_cast<uint16_t*>(
+            buffer.data()
+        );
+
+    if (data == nullptr) {
+
+        std::cerr
+            << "[ERROR] SCRFD input buffer is null\n";
+
+        return false;
+    }
+
+    std::fill_n(
+        data,
+        static_cast<std::size_t>(
+            buffer.elementCount()
+        ),
+        static_cast<uint16_t>(
+            quantizedZero
+        )
+    );
+
+    std::cout
+        << "[INFO] SCRFD test input filled\n";
+
+    std::cout
+        << "       quantized zero: "
+        << quantizedZero
+        << '\n';
+
+    std::cout
+        << "       real zero scale: "
+        << quantization
+               ->scaleOffsetEncoding
+               .scale
+        << '\n';
+
+    std::cout
+        << "       elements: "
+        << buffer.elementCount()
+        << '\n';
+
+    return true;
+}
+
+// =========================================================
+// Clear outputs before execution
+// =========================================================
+
+void clearOutputBuffers(
+    std::vector<TensorBufferPtr>& buffers
+)
+{
+    for (auto& buffer :
+         buffers) {
+
+        if (buffer->data() == nullptr) {
+            continue;
+        }
+
+        std::memset(
+            buffer->data(),
+            0,
+            buffer->byteSize()
+        );
+    }
+}
+
+// =========================================================
+// Print several raw uint16 output values
+//
+// 5G.1 does NOT interpret detections yet.
+// =========================================================
+
+void printRawOutputSample(
+    const inference::QnnTensorBuffer& buffer,
+    std::size_t maxValues = 8
+)
+{
+    if (buffer.data() == nullptr) {
+        return;
+    }
+
+    if (getDataType(
+            buffer.tensor()
+        ) !=
+        QNN_DATATYPE_UFIXED_POINT_16) {
+
+        std::cout
+            << "       raw sample: "
+            << "<unsupported datatype>\n";
+
+        return;
+    }
+
+    const auto* values =
+        static_cast<const uint16_t*>(
+            buffer.data()
+        );
+
+    const std::size_t count =
+        std::min<std::size_t>(
+            maxValues,
+            static_cast<std::size_t>(
+                buffer.elementCount()
+            )
+        );
+
+    std::cout
+        << "       raw sample: [";
+
+    for (std::size_t i = 0;
+         i < count;
+         ++i) {
+
+        if (i > 0) {
+            std::cout << ", ";
+        }
+
+        std::cout
+            << values[i];
+    }
+
+    std::cout << "]\n";
+}
+
+// =========================================================
+// Main
+// =========================================================
 
 } // namespace
 
@@ -147,8 +397,7 @@ int main()
     if (backendPath == nullptr) {
 
         std::cerr
-            << "[ERROR] "
-            << "QNN_BACKEND_PATH is not set\n";
+            << "[ERROR] QNN_BACKEND_PATH is not set\n";
 
         return 1;
     }
@@ -156,8 +405,7 @@ int main()
     if (modelPath == nullptr) {
 
         std::cerr
-            << "[ERROR] "
-            << "QNN_MODEL_PATH is not set\n";
+            << "[ERROR] QNN_MODEL_PATH is not set\n";
 
         return 1;
     }
@@ -246,7 +494,7 @@ int main()
         << "[PASS] QNN device created\n";
 
     // =====================================================
-    // QNN model
+    // SCRFD model
     // =====================================================
 
     inference::QnnModel model(
@@ -266,10 +514,10 @@ int main()
     }
 
     std::cout
-        << "[PASS] model .so loaded\n";
+        << "[PASS] SCRFD model loaded\n";
 
     // =====================================================
-    // Compose graph
+    // Compose
     // =====================================================
 
     if (!model.composeGraphs()) {
@@ -283,15 +531,10 @@ int main()
     }
 
     std::cout
-        << "[PASS] QNN graphs composed\n";
-
-    std::cout
-        << "[INFO] graph count: "
-        << model.graphCount()
-        << '\n';
+        << "[PASS] SCRFD graph composed\n";
 
     // =====================================================
-    // Finalize graph
+    // Finalize
     // =====================================================
 
     if (!model.finalizeGraphs()) {
@@ -304,35 +547,11 @@ int main()
         return 1;
     }
 
-    if (!model.graphsFinalized()) {
-
-        std::cerr
-            << "[ERROR] graphs are not finalized\n";
-
-        return 1;
-    }
-
     std::cout
-        << "[PASS] QNN graphs finalized\n";
-
-    for (uint32_t i = 0;
-         i < model.graphCount();
-         ++i) {
-
-        std::cout
-            << "[INFO] graph["
-            << i
-            << "] finalized: "
-            << (
-                model.graphFinalized(i)
-                    ? "yes"
-                    : "no"
-            )
-            << '\n';
-    }
+        << "[PASS] SCRFD graph finalized\n";
 
     // =====================================================
-    // Graph metadata
+    // SCRFD uses graph 0
     // =====================================================
 
     const auto* graph =
@@ -358,21 +577,24 @@ int main()
         << '\n';
 
     std::cout
-        << "[INFO] input count: "
+        << "[INFO] inputs: "
         << graph->numInputTensors
         << '\n';
 
     std::cout
-        << "[INFO] output count: "
+        << "[INFO] outputs: "
         << graph->numOutputTensors
         << '\n';
 
     // =====================================================
-    // Input runtime buffers
+    // Allocate runtime buffers
     // =====================================================
 
     std::vector<TensorBufferPtr>
         inputBuffers;
+
+    std::vector<TensorBufferPtr>
+        outputBuffers;
 
     if (!createTensorBuffers(
             graph->inputTensors,
@@ -384,13 +606,6 @@ int main()
         return 1;
     }
 
-    // =====================================================
-    // Output runtime buffers
-    // =====================================================
-
-    std::vector<TensorBufferPtr>
-        outputBuffers;
-
     if (!createTensorBuffers(
             graph->outputTensors,
             graph->numOutputTensors,
@@ -401,47 +616,115 @@ int main()
         return 1;
     }
 
+    std::cout
+        << "[PASS] SCRFD runtime buffers ready\n";
+
     // =====================================================
-    // Summary
+    // SCRFD has exactly one input
     // =====================================================
 
-    const uint64_t inputBytes =
-        totalBufferBytes(
-            inputBuffers
+    if (inputBuffers.size() != 1) {
+
+        std::cerr
+            << "[ERROR] SCRFD expected 1 input, got "
+            << inputBuffers.size()
+            << '\n';
+
+        return 1;
+    }
+
+    // =====================================================
+    // Fill neutral quantized input
+    // =====================================================
+
+    if (!fillFaceDetectorTestInput(
+            *inputBuffers[0]
+        )) {
+
+        return 1;
+    }
+
+    // Explicitly clear outputs so we know graphExecute
+    // will be responsible for writing them.
+    clearOutputBuffers(
+        outputBuffers
+    );
+
+    // =====================================================
+    // Build contiguous tensor arrays
+    // =====================================================
+
+    std::vector<Qnn_Tensor_t>
+        inputTensors =
+            buildTensorArray(
+                inputBuffers
+            );
+
+    std::vector<Qnn_Tensor_t>
+        outputTensors =
+            buildTensorArray(
+                outputBuffers
+            );
+
+    // =====================================================
+    // Execute SCRFD on HTP
+    // =====================================================
+
+    std::cout
+        << "[INFO] executing SCRFD graph on HTP...\n";
+
+    if (!model.executeGraph(
+            0,
+
+            inputTensors.data(),
+            static_cast<uint32_t>(
+                inputTensors.size()
+            ),
+
+            outputTensors.data(),
+            static_cast<uint32_t>(
+                outputTensors.size()
+            )
+        )) {
+
+        std::cerr
+            << "[ERROR] executeGraph: "
+            << model.lastError()
+            << '\n';
+
+        return 1;
+    }
+
+    std::cout
+        << "[PASS] SCRFD graphExecute succeeded\n";
+
+    // =====================================================
+    // Print raw output samples
+    //
+    // No dequantization / decoding in 5G.1.
+    // =====================================================
+
+    std::cout
+        << "[INFO] raw SCRFD outputs:\n";
+
+    for (std::size_t i = 0;
+         i < outputBuffers.size();
+         ++i) {
+
+        std::cout
+            << "[INFO] output["
+            << i
+            << "] "
+            << outputBuffers[i]->name()
+            << '\n';
+
+        printRawOutputSample(
+            *outputBuffers[i]
         );
-
-    const uint64_t outputBytes =
-        totalBufferBytes(
-            outputBuffers
-        );
+    }
 
     std::cout
-        << "\n"
-        << "[INFO] ==============================\n";
-
-    std::cout
-        << "[INFO] input buffer bytes: "
-        << inputBytes
-        << '\n';
-
-    std::cout
-        << "[INFO] output buffer bytes: "
-        << outputBytes
-        << '\n';
-
-    std::cout
-        << "[INFO] total runtime I/O bytes: "
-        << (
-            inputBytes +
-            outputBytes
-        )
-        << '\n';
-
-    std::cout
-        << "[PASS] QNN tensor buffers ready\n";
-
-    std::cout
-        << "[PASS] QNN model ready for execution\n";
+        << "[PASS] 5G.1 SCRFD execution test complete\n";
 
     return 0;
 }
