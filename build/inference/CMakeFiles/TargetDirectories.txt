@@ -1,0 +1,5 @@
+/home/anhnt/qnn_model/qnn_model_wrapper/build/inference/CMakeFiles/inference_runtime.dir
+/home/anhnt/qnn_model/qnn_model_wrapper/build/inference/CMakeFiles/test_plugin.dir
+/home/anhnt/qnn_model/qnn_model_wrapper/build/inference/CMakeFiles/test_shared_library.dir
+/home/anhnt/qnn_model/qnn_model_wrapper/build/inference/CMakeFiles/edit_cache.dir
+/home/anhnt/qnn_model/qnn_model_wrapper/build/inference/CMakeFiles/rebuild_cache.dir
