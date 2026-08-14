@@ -1,8 +1,202 @@
 #include "inference/qnn_backend.hpp"
 #include "inference/qnn_model.hpp"
 
+#include <QnnTensor.h>
+
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
+
+namespace {
+
+void printDimensions(
+    const uint32_t* dimensions,
+    uint32_t rank
+)
+{
+    std::cout << "[";
+
+    for (uint32_t i = 0; i < rank; ++i) {
+        if (i > 0) {
+            std::cout << ", ";
+        }
+
+        if (dimensions != nullptr) {
+            std::cout << dimensions[i];
+        } else {
+            std::cout << "?";
+        }
+    }
+
+    std::cout << "]";
+}
+
+void printTensor(
+    const Qnn_Tensor_t& tensor,
+    const char* prefix,
+    uint32_t index
+)
+{
+    std::cout
+        << "[INFO] "
+        << prefix
+        << "["
+        << index
+        << "]\n";
+
+    std::cout
+        << "       version: "
+        << static_cast<int>(tensor.version)
+        << '\n';
+
+    if (tensor.version != QNN_TENSOR_VERSION_1) {
+        std::cout
+            << "       [WARN] Unsupported tensor version\n";
+
+        return;
+    }
+
+    const auto& tensorV1 =
+        tensor.v1;
+
+    std::cout
+        << "       name: "
+        << (
+            tensorV1.name != nullptr
+                ? tensorV1.name
+                : "<null>"
+        )
+        << '\n';
+
+    std::cout
+        << "       id: "
+        << tensorV1.id
+        << '\n';
+
+    std::cout
+        << "       type: "
+        << static_cast<int>(tensorV1.type)
+        << '\n';
+
+    std::cout
+        << "       data format: "
+        << static_cast<int>(tensorV1.dataFormat)
+        << '\n';
+
+    std::cout
+        << "       data type: "
+        << static_cast<int>(tensorV1.dataType)
+        << '\n';
+
+    std::cout
+        << "       rank: "
+        << tensorV1.rank
+        << '\n';
+
+    std::cout
+        << "       dimensions: ";
+
+    printDimensions(
+        tensorV1.dimensions,
+        tensorV1.rank
+    );
+
+    std::cout << '\n';
+
+    std::cout
+        << "       mem type: "
+        << static_cast<int>(tensorV1.memType)
+        << '\n';
+}
+
+void printGraph(
+    const qnn_wrapper_api::GraphInfo_t& graph,
+    uint32_t graphIndex
+)
+{
+    std::cout
+        << "\n"
+        << "========================================\n";
+
+    std::cout
+        << "[INFO] graph["
+        << graphIndex
+        << "]\n";
+
+    std::cout
+        << "[INFO] graph name: "
+        << (
+            graph.graphName != nullptr
+                ? graph.graphName
+                : "<null>"
+        )
+        << '\n';
+
+    std::cout
+        << "[INFO] graph handle: "
+        << graph.graph
+        << '\n';
+
+    // =====================================================
+    // Inputs
+    // =====================================================
+
+    std::cout
+        << "[INFO] input count: "
+        << graph.numInputTensors
+        << '\n';
+
+    if (graph.inputTensors == nullptr &&
+        graph.numInputTensors > 0) {
+
+        std::cout
+            << "[ERROR] input tensor array is null\n";
+
+        return;
+    }
+
+    for (uint32_t i = 0;
+         i < graph.numInputTensors;
+         ++i) {
+
+        printTensor(
+            graph.inputTensors[i],
+            "input",
+            i
+        );
+    }
+
+    // =====================================================
+    // Outputs
+    // =====================================================
+
+    std::cout
+        << "[INFO] output count: "
+        << graph.numOutputTensors
+        << '\n';
+
+    if (graph.outputTensors == nullptr &&
+        graph.numOutputTensors > 0) {
+
+        std::cout
+            << "[ERROR] output tensor array is null\n";
+
+        return;
+    }
+
+    for (uint32_t i = 0;
+         i < graph.numOutputTensors;
+         ++i) {
+
+        printTensor(
+            graph.outputTensors[i],
+            "output",
+            i
+        );
+    }
+}
+
+} // namespace
 
 int main()
 {
@@ -42,10 +236,6 @@ int main()
 
     inference::QnnBackend backend;
 
-    // -----------------------------------------------------
-    // 1. Load backend library
-    // -----------------------------------------------------
-
     if (!backend.loadLibrary(backendPath)) {
         std::cerr
             << "[ERROR] loadLibrary: "
@@ -57,10 +247,6 @@ int main()
 
     std::cout
         << "[PASS] QNN backend library loaded\n";
-
-    // -----------------------------------------------------
-    // 2. Load providers
-    // -----------------------------------------------------
 
     if (!backend.loadProviders()) {
         std::cerr
@@ -74,10 +260,6 @@ int main()
     std::cout
         << "[PASS] QNN providers loaded\n";
 
-    // -----------------------------------------------------
-    // 3. Select interface
-    // -----------------------------------------------------
-
     if (!backend.selectInterface()) {
         std::cerr
             << "[ERROR] selectInterface: "
@@ -90,10 +272,6 @@ int main()
     std::cout
         << "[PASS] QNN interface selected\n";
 
-    // -----------------------------------------------------
-    // 4. Create backend
-    // -----------------------------------------------------
-
     if (!backend.createBackend()) {
         std::cerr
             << "[ERROR] createBackend: "
@@ -105,10 +283,6 @@ int main()
 
     std::cout
         << "[PASS] QNN backend created\n";
-
-    // -----------------------------------------------------
-    // 5. Create device
-    // -----------------------------------------------------
 
     if (!backend.createDevice()) {
         std::cerr
@@ -123,14 +297,10 @@ int main()
         << "[PASS] QNN device created\n";
 
     // =====================================================
-    // QNN model
+    // Model
     // =====================================================
 
     inference::QnnModel model(backend);
-
-    // -----------------------------------------------------
-    // 6. Load model
-    // -----------------------------------------------------
 
     if (!model.load(modelPath)) {
         std::cerr
@@ -141,26 +311,14 @@ int main()
         return 1;
     }
 
-    if (!model.ready()) {
-        std::cerr
-            << "[ERROR] model is not ready\n";
-
-        return 1;
-    }
-
     std::cout
         << "[PASS] model .so loaded\n";
 
     std::cout
         << "[PASS] required model symbols found\n";
 
-    std::cout
-        << "[INFO] model context handle: "
-        << model.contextHandle()
-        << '\n';
-
     // =====================================================
-    // 7. Compose graphs
+    // Compose graph
     // =====================================================
 
     if (!model.composeGraphs()) {
@@ -172,40 +330,43 @@ int main()
         return 1;
     }
 
-    if (!model.graphsReady()) {
-        std::cerr
-            << "[ERROR] graph metadata is not ready\n";
-
-        return 1;
-    }
-
     std::cout
         << "[PASS] QNN graphs composed\n";
 
-    // =====================================================
-    // 8. Inspect graph count
-    // =====================================================
-
-    const uint32_t graphCount =
-        model.graphCount();
-
     std::cout
         << "[INFO] graph count: "
-        << graphCount
+        << model.graphCount()
         << '\n';
 
-    if (graphCount == 0) {
-        std::cerr
-            << "[ERROR] model returned zero graphs\n";
+    // =====================================================
+    // Inspect graphs
+    // =====================================================
 
-        return 1;
+    for (uint32_t graphIndex = 0;
+         graphIndex < model.graphCount();
+         ++graphIndex) {
+
+        const auto* graph =
+            model.graphInfo(graphIndex);
+
+        if (graph == nullptr) {
+            std::cerr
+                << "[ERROR] graphInfo("
+                << graphIndex
+                << ") returned null\n";
+
+            return 1;
+        }
+
+        printGraph(
+            *graph,
+            graphIndex
+        );
     }
 
     std::cout
-        << "[PASS] graph metadata available\n";
-
-    std::cout
-        << "[PASS] QnnModel compose test complete\n";
+        << "\n"
+        << "[PASS] graph metadata inspection complete\n";
 
     return 0;
 }

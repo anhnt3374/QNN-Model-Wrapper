@@ -41,6 +41,11 @@ public:
 
     uint32_t graphCount() const noexcept;
 
+    const qnn_wrapper_api::GraphInfo_t*
+    graphInfo(
+        uint32_t index
+    ) const noexcept;
+
     Qnn_ContextHandle_t contextHandle() const noexcept;
 
     const std::string& modelPath() const noexcept;

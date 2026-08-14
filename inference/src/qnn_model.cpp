@@ -24,7 +24,7 @@ bool QnnModel::load(
     shutdown();
 
     // =====================================================
-    // 1. Create independent context for this model
+    // 1. Create independent QNN context for this model
     // =====================================================
 
     if (!context_.create()) {
@@ -36,7 +36,7 @@ bool QnnModel::load(
     }
 
     // =====================================================
-    // 2. Load generated model .so
+    // 2. Load generated model shared library
     // =====================================================
 
     if (!modelLibrary_.open(modelPath)) {
@@ -98,10 +98,6 @@ bool QnnModel::load(
 
 bool QnnModel::composeGraphs()
 {
-    // =====================================================
-    // Validate runtime state
-    // =====================================================
-
     if (!ready()) {
         lastError_ =
             "Model is not ready";
@@ -109,7 +105,6 @@ bool QnnModel::composeGraphs()
         return false;
     }
 
-    // composeGraphs() is idempotent in our wrapper.
     if (graphsInfo_ != nullptr &&
         graphCount_ > 0) {
 
@@ -119,27 +114,23 @@ bool QnnModel::composeGraphs()
     graphsInfo_ = nullptr;
     graphCount_ = 0;
 
-    // =====================================================
-    // Call generated model function
-    // =====================================================
-
     const qnn_wrapper_api::ModelError_t result =
         composeGraphsFn_(
             backend_.backendHandle(),
             backend_.interface(),
             context_.handle(),
 
-            // No graph-specific config for now.
+            // No graph configuration override.
             nullptr,
             0,
 
             &graphsInfo_,
             &graphCount_,
 
-            // Debug graph generation disabled.
+            // Debug disabled.
             false,
 
-            // We have not implemented QNN logger yet.
+            // No custom QNN logger yet.
             nullptr,
             QNN_LOG_LEVEL_ERROR
         );
@@ -204,11 +195,8 @@ void QnnModel::releaseGraphs()
 
 void QnnModel::shutdown()
 {
-    // Important:
-    //
-    // QnnModel_freeGraphsInfo lives inside model .so,
-    // therefore graph metadata must be released BEFORE
-    // modelLibrary_.close().
+    // Graph metadata must be released while model .so
+    // and QnnModel_freeGraphsInfo are still available.
 
     releaseGraphs();
 
@@ -264,6 +252,22 @@ uint32_t
 QnnModel::graphCount() const noexcept
 {
     return graphCount_;
+}
+
+const qnn_wrapper_api::GraphInfo_t*
+QnnModel::graphInfo(
+    uint32_t index
+) const noexcept
+{
+    if (graphsInfo_ == nullptr) {
+        return nullptr;
+    }
+
+    if (index >= graphCount_) {
+        return nullptr;
+    }
+
+    return graphsInfo_[index];
 }
 
 Qnn_ContextHandle_t
