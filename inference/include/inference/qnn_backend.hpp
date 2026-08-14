@@ -3,6 +3,7 @@
 #include "inference/shared_library.hpp"
 
 #include <QnnBackend.h>
+#include <QnnContext.h>
 #include <QnnDevice.h>
 #include <QnnInterface.h>
 
@@ -32,6 +33,8 @@ public:
 
     bool createDevice();
 
+    bool createContext();
+
     void shutdown();
 
     uint32_t providerCount() const noexcept;
@@ -42,9 +45,13 @@ public:
 
     bool deviceReady() const noexcept;
 
+    bool contextReady() const noexcept;
+
     Qnn_BackendHandle_t backendHandle() const noexcept;
 
     Qnn_DeviceHandle_t deviceHandle() const noexcept;
+
+    Qnn_ContextHandle_t contextHandle() const noexcept;
 
     QNN_INTERFACE_VER_TYPE& interface() noexcept;
 
@@ -64,6 +71,8 @@ private:
     Qnn_BackendHandle_t backendHandle_ = nullptr;
 
     Qnn_DeviceHandle_t deviceHandle_ = nullptr;
+
+    Qnn_ContextHandle_t contextHandle_ = nullptr;
 
     std::string lastError_;
 };

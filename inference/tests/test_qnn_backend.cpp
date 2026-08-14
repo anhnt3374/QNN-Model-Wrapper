@@ -39,7 +39,7 @@ int main()
         << "[PASS] libQnnHtp.so loaded\n";
 
     // =====================================================
-    // 2. Load providers
+    // 2. Load QNN providers
     // =====================================================
 
     if (!backend.loadProviders()) {
@@ -83,7 +83,7 @@ int main()
         << "[PASS] QNN interface selected\n";
 
     // =====================================================
-    // 4. Create backend
+    // 4. Create QNN backend
     // =====================================================
 
     if (!backend.createBackend()) {
@@ -111,7 +111,7 @@ int main()
         << '\n';
 
     // =====================================================
-    // 5. Create device
+    // 5. Create QNN device
     // =====================================================
 
     if (!backend.createDevice()) {
@@ -136,6 +136,34 @@ int main()
     std::cout
         << "[INFO] device handle: "
         << backend.deviceHandle()
+        << '\n';
+
+    // =====================================================
+    // 6. Create QNN context
+    // =====================================================
+
+    if (!backend.createContext()) {
+        std::cerr
+            << "[ERROR] createContext: "
+            << backend.lastError()
+            << '\n';
+
+        return 1;
+    }
+
+    if (!backend.contextReady()) {
+        std::cerr
+            << "[ERROR] contextReady() returned false\n";
+
+        return 1;
+    }
+
+    std::cout
+        << "[PASS] QNN context created\n";
+
+    std::cout
+        << "[INFO] context handle: "
+        << backend.contextHandle()
         << '\n';
 
     std::cout
