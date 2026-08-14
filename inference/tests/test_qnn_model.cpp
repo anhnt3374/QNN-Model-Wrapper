@@ -10,6 +10,102 @@
 
 namespace {
 
+const char* dataTypeName(
+    Qnn_DataType_t dataType
+)
+{
+    switch (dataType) {
+
+    case QNN_DATATYPE_FLOAT_32:
+        return "FLOAT_32";
+
+    case QNN_DATATYPE_FLOAT_16:
+        return "FLOAT_16";
+
+    case QNN_DATATYPE_INT_8:
+        return "INT_8";
+
+    case QNN_DATATYPE_INT_16:
+        return "INT_16";
+
+    case QNN_DATATYPE_UINT_8:
+        return "UINT_8";
+
+    case QNN_DATATYPE_UINT_16:
+        return "UINT_16";
+
+    case QNN_DATATYPE_SFIXED_POINT_8:
+        return "SFIXED_POINT_8";
+
+    case QNN_DATATYPE_SFIXED_POINT_16:
+        return "SFIXED_POINT_16";
+
+    case QNN_DATATYPE_UFIXED_POINT_8:
+        return "UFIXED_POINT_8";
+
+    case QNN_DATATYPE_UFIXED_POINT_16:
+        return "UFIXED_POINT_16";
+
+    default:
+        return "UNKNOWN";
+    }
+}
+
+uint32_t bytesPerElement(
+    Qnn_DataType_t dataType
+)
+{
+    switch (dataType) {
+
+    case QNN_DATATYPE_INT_8:
+    case QNN_DATATYPE_UINT_8:
+    case QNN_DATATYPE_SFIXED_POINT_8:
+    case QNN_DATATYPE_UFIXED_POINT_8:
+    case QNN_DATATYPE_BOOL_8:
+        return 1;
+
+    case QNN_DATATYPE_FLOAT_16:
+    case QNN_DATATYPE_INT_16:
+    case QNN_DATATYPE_UINT_16:
+    case QNN_DATATYPE_SFIXED_POINT_16:
+    case QNN_DATATYPE_UFIXED_POINT_16:
+        return 2;
+
+    case QNN_DATATYPE_FLOAT_32:
+    case QNN_DATATYPE_INT_32:
+    case QNN_DATATYPE_UINT_32:
+    case QNN_DATATYPE_SFIXED_POINT_32:
+    case QNN_DATATYPE_UFIXED_POINT_32:
+        return 4;
+
+    default:
+        return 0;
+    }
+}
+
+uint64_t elementCount(
+    const uint32_t* dimensions,
+    uint32_t rank
+)
+{
+    if (dimensions == nullptr ||
+        rank == 0) {
+
+        return 0;
+    }
+
+    uint64_t count = 1;
+
+    for (uint32_t i = 0;
+         i < rank;
+         ++i) {
+
+        count *= dimensions[i];
+    }
+
+    return count;
+}
+
 void printDimensions(
     const uint32_t* dimensions,
     uint32_t rank
@@ -17,7 +113,10 @@ void printDimensions(
 {
     std::cout << "[";
 
-    for (uint32_t i = 0; i < rank; ++i) {
+    for (uint32_t i = 0;
+         i < rank;
+         ++i) {
+
         if (i > 0) {
             std::cout << ", ";
         }
@@ -44,7 +143,10 @@ void printDynamicDimensions(
 
     std::cout << "[";
 
-    for (uint32_t i = 0; i < rank; ++i) {
+    for (uint32_t i = 0;
+         i < rank;
+         ++i) {
+
         if (i > 0) {
             std::cout << ", ";
         }
@@ -58,121 +160,180 @@ void printDynamicDimensions(
     std::cout << "]";
 }
 
-void printTensorV1(
-    const Qnn_TensorV1_t& tensor
+void printQuantization(
+    const Qnn_QuantizeParams_t& quantizeParams
 )
 {
     std::cout
-        << "       name: "
-        << (
-            tensor.name != nullptr
-                ? tensor.name
-                : "<null>"
-        )
-        << '\n';
-
-    std::cout
-        << "       id: "
-        << tensor.id
-        << '\n';
-
-    std::cout
-        << "       type: "
-        << static_cast<int>(tensor.type)
-        << '\n';
-
-    std::cout
-        << "       data format: "
-        << static_cast<int>(tensor.dataFormat)
-        << '\n';
-
-    std::cout
-        << "       data type: "
-        << static_cast<int>(tensor.dataType)
-        << '\n';
-
-    std::cout
-        << "       rank: "
-        << tensor.rank
-        << '\n';
-
-    std::cout
-        << "       dimensions: ";
-
-    printDimensions(
-        tensor.dimensions,
-        tensor.rank
-    );
-
-    std::cout << '\n';
-
-    std::cout
-        << "       mem type: "
-        << static_cast<int>(tensor.memType)
-        << '\n';
-
-    std::cout
         << "       quantization definition: "
         << static_cast<int>(
-               tensor.quantizeParams.encodingDefinition
+               quantizeParams.encodingDefinition
            )
         << '\n';
 
     std::cout
         << "       quantization encoding: "
         << static_cast<int>(
-               tensor.quantizeParams.quantizationEncoding
+               quantizeParams.quantizationEncoding
            )
         << '\n';
+
+    if (quantizeParams.quantizationEncoding ==
+        QNN_QUANTIZATION_ENCODING_SCALE_OFFSET) {
+
+        std::cout
+            << "       quantization type: "
+            << "SCALE_OFFSET\n";
+
+        std::cout
+            << "       scale: "
+            << quantizeParams
+                   .scaleOffsetEncoding
+                   .scale
+            << '\n';
+
+        std::cout
+            << "       offset: "
+            << quantizeParams
+                   .scaleOffsetEncoding
+                   .offset
+            << '\n';
+    }
 }
 
-void printTensorV2(
-    const Qnn_TensorV2_t& tensor
+void printTensorCommon(
+    const char* name,
+    uint32_t id,
+    Qnn_TensorType_t type,
+    Qnn_TensorDataFormat_t dataFormat,
+    Qnn_DataType_t dataType,
+    const Qnn_QuantizeParams_t& quantizeParams,
+    uint32_t rank,
+    const uint32_t* dimensions,
+    Qnn_TensorMemType_t memType
 )
 {
     std::cout
         << "       name: "
         << (
-            tensor.name != nullptr
-                ? tensor.name
+            name != nullptr
+                ? name
                 : "<null>"
         )
         << '\n';
 
     std::cout
         << "       id: "
-        << tensor.id
+        << id
         << '\n';
 
     std::cout
         << "       type: "
-        << static_cast<int>(tensor.type)
+        << static_cast<int>(type)
         << '\n';
 
     std::cout
         << "       data format: "
-        << static_cast<int>(tensor.dataFormat)
+        << dataFormat
         << '\n';
 
     std::cout
         << "       data type: "
-        << static_cast<int>(tensor.dataType)
+        << static_cast<int>(dataType)
+        << " ("
+        << dataTypeName(dataType)
+        << ")"
         << '\n';
 
     std::cout
         << "       rank: "
-        << tensor.rank
+        << rank
         << '\n';
 
     std::cout
         << "       dimensions: ";
 
     printDimensions(
-        tensor.dimensions,
-        tensor.rank
+        dimensions,
+        rank
     );
 
     std::cout << '\n';
+
+    const uint64_t elements =
+        elementCount(
+            dimensions,
+            rank
+        );
+
+    const uint32_t elementBytes =
+        bytesPerElement(
+            dataType
+        );
+
+    const uint64_t bufferBytes =
+        elements *
+        static_cast<uint64_t>(
+            elementBytes
+        );
+
+    std::cout
+        << "       element count: "
+        << elements
+        << '\n';
+
+    std::cout
+        << "       bytes / element: "
+        << elementBytes
+        << '\n';
+
+    std::cout
+        << "       buffer bytes: "
+        << bufferBytes
+        << '\n';
+
+    std::cout
+        << "       mem type: "
+        << static_cast<int>(memType)
+        << '\n';
+
+    printQuantization(
+        quantizeParams
+    );
+}
+
+void printTensorV1(
+    const Qnn_TensorV1_t& tensor
+)
+{
+    printTensorCommon(
+        tensor.name,
+        tensor.id,
+        tensor.type,
+        tensor.dataFormat,
+        tensor.dataType,
+        tensor.quantizeParams,
+        tensor.rank,
+        tensor.dimensions,
+        tensor.memType
+    );
+}
+
+void printTensorV2(
+    const Qnn_TensorV2_t& tensor
+)
+{
+    printTensorCommon(
+        tensor.name,
+        tensor.id,
+        tensor.type,
+        tensor.dataFormat,
+        tensor.dataType,
+        tensor.quantizeParams,
+        tensor.rank,
+        tensor.dimensions,
+        tensor.memType
+    );
 
     std::cout
         << "       dynamic dimensions: ";
@@ -183,32 +344,6 @@ void printTensorV2(
     );
 
     std::cout << '\n';
-
-    std::cout
-        << "       mem type: "
-        << static_cast<int>(tensor.memType)
-        << '\n';
-
-    std::cout
-        << "       quantization definition: "
-        << static_cast<int>(
-               tensor.quantizeParams.encodingDefinition
-           )
-        << '\n';
-
-    std::cout
-        << "       quantization encoding: "
-        << static_cast<int>(
-               tensor.quantizeParams.quantizationEncoding
-           )
-        << '\n';
-
-    std::cout
-        << "       is produced: "
-        << static_cast<int>(
-               tensor.isProduced
-           )
-        << '\n';
 }
 
 void printTensor(
@@ -226,7 +361,9 @@ void printTensor(
 
     std::cout
         << "       version: "
-        << static_cast<int>(tensor.version)
+        << static_cast<int>(
+               tensor.version
+           )
         << '\n';
 
     switch (tensor.version) {
@@ -348,10 +485,14 @@ void printGraph(
 int main()
 {
     const char* backendPath =
-        std::getenv("QNN_BACKEND_PATH");
+        std::getenv(
+            "QNN_BACKEND_PATH"
+        );
 
     const char* modelPath =
-        std::getenv("QNN_MODEL_PATH");
+        std::getenv(
+            "QNN_MODEL_PATH"
+        );
 
     if (backendPath == nullptr) {
         std::cerr
@@ -378,12 +519,15 @@ int main()
         << '\n';
 
     // =====================================================
-    // QNN runtime
+    // Runtime
     // =====================================================
 
     inference::QnnBackend backend;
 
-    if (!backend.loadLibrary(backendPath)) {
+    if (!backend.loadLibrary(
+            backendPath
+        )) {
+
         std::cerr
             << "[ERROR] loadLibrary: "
             << backend.lastError()
@@ -447,9 +591,14 @@ int main()
     // Model
     // =====================================================
 
-    inference::QnnModel model(backend);
+    inference::QnnModel model(
+        backend
+    );
 
-    if (!model.load(modelPath)) {
+    if (!model.load(
+            modelPath
+        )) {
+
         std::cerr
             << "[ERROR] model.load: "
             << model.lastError()
@@ -463,10 +612,6 @@ int main()
 
     std::cout
         << "[PASS] required model symbols found\n";
-
-    // =====================================================
-    // Compose graph
-    // =====================================================
 
     if (!model.composeGraphs()) {
         std::cerr
@@ -486,7 +631,7 @@ int main()
         << '\n';
 
     // =====================================================
-    // Inspect graphs
+    // Metadata inspection
     // =====================================================
 
     for (uint32_t graphIndex = 0;
