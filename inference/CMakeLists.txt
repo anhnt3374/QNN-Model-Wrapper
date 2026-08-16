@@ -101,6 +101,34 @@ target_link_libraries(
 
 
 # ==========================================================
+# FaceEmbeddingModel
+# ==========================================================
+
+add_library(
+    face_embedding_model
+    STATIC
+
+    src/models/face_embedding_model.cpp
+)
+
+target_include_directories(
+    face_embedding_model
+    PUBLIC
+
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${OpenCV_INCLUDE_DIRS}
+)
+
+target_link_libraries(
+    face_embedding_model
+    PUBLIC
+
+    inference_runtime
+    ${OpenCV_LIBS}
+)
+
+
+# ==========================================================
 # PersonDetectionModel
 # ==========================================================
 
@@ -240,7 +268,7 @@ target_link_libraries(
 
 
 # ==========================================================
-# Face tests
+# Face detector tests
 # ==========================================================
 
 add_executable(
@@ -272,7 +300,25 @@ target_link_libraries(
 
 
 # ==========================================================
-# Person tests
+# Face embedding end-to-end test
+# ==========================================================
+
+add_executable(
+    test_face_embedding
+
+    tests/test_face_embedding.cpp
+)
+
+target_link_libraries(
+    test_face_embedding
+    PRIVATE
+
+    face_embedding_model
+)
+
+
+# ==========================================================
+# Person detector tests
 # ==========================================================
 
 add_executable(
@@ -363,10 +409,6 @@ target_link_libraries(
 )
 
 
-# ==========================================================
-# FireSmoke inference test - 7F.3
-# ==========================================================
-
 add_executable(
     test_fire_smoke_detection_inference
 
@@ -380,9 +422,6 @@ target_link_libraries(
     fire_smoke_detection_model
 )
 
-# ==========================================================
-# FireSmoke raw-head decode test - 7F.4
-# ==========================================================
 
 add_executable(
     test_fire_smoke_detection_decode
