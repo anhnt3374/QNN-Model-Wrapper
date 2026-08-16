@@ -40,7 +40,7 @@ find_package(
 
 
 # ==========================================================
-# Generic QNN inference runtime
+# Generic QNN runtime
 # ==========================================================
 
 add_library(
@@ -73,7 +73,7 @@ target_link_libraries(
 
 
 # ==========================================================
-# SCRFD FaceDetectionModel
+# FaceDetectionModel
 # ==========================================================
 
 add_library(
@@ -101,7 +101,7 @@ target_link_libraries(
 
 
 # ==========================================================
-# YOLOv8n PersonDetectionModel
+# PersonDetectionModel
 # ==========================================================
 
 add_library(
@@ -121,6 +121,34 @@ target_include_directories(
 
 target_link_libraries(
     person_detection_model
+    PUBLIC
+
+    inference_runtime
+    ${OpenCV_LIBS}
+)
+
+
+# ==========================================================
+# FireSmokeDetectionModel
+# ==========================================================
+
+add_library(
+    fire_smoke_detection_model
+    STATIC
+
+    src/models/fire_smoke_detection_model.cpp
+)
+
+target_include_directories(
+    fire_smoke_detection_model
+    PUBLIC
+
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${OpenCV_INCLUDE_DIRS}
+)
+
+target_link_libraries(
+    fire_smoke_detection_model
     PUBLIC
 
     inference_runtime
@@ -166,7 +194,7 @@ target_compile_definitions(
 
 
 # ==========================================================
-# QNN backend test
+# Generic runtime tests
 # ==========================================================
 
 add_executable(
@@ -183,10 +211,6 @@ target_link_libraries(
 )
 
 
-# ==========================================================
-# Generic QNN model test
-# ==========================================================
-
 add_executable(
     test_qnn_model
 
@@ -200,10 +224,6 @@ target_link_libraries(
     inference_runtime
 )
 
-
-# ==========================================================
-# QNN quantization test
-# ==========================================================
 
 add_executable(
     test_qnn_quantization
@@ -220,7 +240,7 @@ target_link_libraries(
 
 
 # ==========================================================
-# Face detector preprocess test
+# Face tests
 # ==========================================================
 
 add_executable(
@@ -237,10 +257,6 @@ target_link_libraries(
 )
 
 
-# ==========================================================
-# Face detector image inference test
-# ==========================================================
-
 add_executable(
     test_face_detection_inference
 
@@ -256,7 +272,7 @@ target_link_libraries(
 
 
 # ==========================================================
-# Person detector contract test - 6P.1
+# Person tests
 # ==========================================================
 
 add_executable(
@@ -273,10 +289,6 @@ target_link_libraries(
 )
 
 
-# ==========================================================
-# Person detector preprocess test - 6P.2
-# ==========================================================
-
 add_executable(
     test_person_detection_preprocess
 
@@ -290,10 +302,6 @@ target_link_libraries(
     person_detection_model
 )
 
-
-# ==========================================================
-# Person detector inference test - 6P.3
-# ==========================================================
 
 add_executable(
     test_person_detection_inference
@@ -309,10 +317,6 @@ target_link_libraries(
 )
 
 
-# ==========================================================
-# Person detector decode test - 6P.4
-# ==========================================================
-
 add_executable(
     test_person_detection_decode
 
@@ -324,4 +328,71 @@ target_link_libraries(
     PRIVATE
 
     person_detection_model
+)
+
+
+# ==========================================================
+# FireSmoke tests
+# ==========================================================
+
+add_executable(
+    test_fire_smoke_detection_model
+
+    tests/test_fire_smoke_detection_model.cpp
+)
+
+target_link_libraries(
+    test_fire_smoke_detection_model
+    PRIVATE
+
+    fire_smoke_detection_model
+)
+
+
+add_executable(
+    test_fire_smoke_detection_preprocess
+
+    tests/test_fire_smoke_detection_preprocess.cpp
+)
+
+target_link_libraries(
+    test_fire_smoke_detection_preprocess
+    PRIVATE
+
+    fire_smoke_detection_model
+)
+
+
+# ==========================================================
+# FireSmoke inference test - 7F.3
+# ==========================================================
+
+add_executable(
+    test_fire_smoke_detection_inference
+
+    tests/test_fire_smoke_detection_inference.cpp
+)
+
+target_link_libraries(
+    test_fire_smoke_detection_inference
+    PRIVATE
+
+    fire_smoke_detection_model
+)
+
+# ==========================================================
+# FireSmoke raw-head decode test - 7F.4
+# ==========================================================
+
+add_executable(
+    test_fire_smoke_detection_decode
+
+    tests/test_fire_smoke_detection_decode.cpp
+)
+
+target_link_libraries(
+    test_fire_smoke_detection_decode
+    PRIVATE
+
+    fire_smoke_detection_model
 )
