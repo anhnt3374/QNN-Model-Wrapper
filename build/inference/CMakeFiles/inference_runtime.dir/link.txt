@@ -1,2 +1,0 @@
-/usr/bin/ar qc libinference_runtime.a CMakeFiles/inference_runtime.dir/src/shared_library.cpp.o
-/usr/bin/ranlib libinference_runtime.a

@@ -1,7 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/home/anhnt/qnn_model/qnn_model_wrapper/build/inference/cmake_install.cmake"
-	],
-	"Parallel" : false
-}

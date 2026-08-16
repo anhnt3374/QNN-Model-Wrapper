@@ -1,1 +1,0 @@
-/usr/bin/c++ -fPIC -g -shared -Wl,--dependency-file=CMakeFiles/test_plugin.dir/link.d -Wl,-soname,libtest_plugin.so -o libtest_plugin.so CMakeFiles/test_plugin.dir/tests/test_plugin.cpp.o
