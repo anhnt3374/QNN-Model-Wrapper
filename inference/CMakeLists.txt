@@ -60,9 +60,7 @@ target_include_directories(
     PUBLIC
 
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-
     ${QNN_SDK_ROOT}/include/QNN
-
     ${QNN_SDK_ROOT}/examples/QNN/SampleApp/SampleApp/src/WrapperUtils
 )
 
@@ -90,7 +88,6 @@ target_include_directories(
     PUBLIC
 
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-
     ${OpenCV_INCLUDE_DIRS}
 )
 
@@ -99,7 +96,34 @@ target_link_libraries(
     PUBLIC
 
     inference_runtime
+    ${OpenCV_LIBS}
+)
 
+
+# ==========================================================
+# YOLOv8n PersonDetectionModel
+# ==========================================================
+
+add_library(
+    person_detection_model
+    STATIC
+
+    src/models/person_detection_model.cpp
+)
+
+target_include_directories(
+    person_detection_model
+    PUBLIC
+
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${OpenCV_INCLUDE_DIRS}
+)
+
+target_link_libraries(
+    person_detection_model
+    PUBLIC
+
+    inference_runtime
     ${OpenCV_LIBS}
 )
 
@@ -196,7 +220,7 @@ target_link_libraries(
 
 
 # ==========================================================
-# FaceDetectionModel preprocess test - 5H.1
+# Face detector preprocess test
 # ==========================================================
 
 add_executable(
@@ -214,7 +238,7 @@ target_link_libraries(
 
 
 # ==========================================================
-# FaceDetectionModel real-image inference test - 5H.2
+# Face detector image inference test
 # ==========================================================
 
 add_executable(
@@ -228,4 +252,76 @@ target_link_libraries(
     PRIVATE
 
     face_detection_model
+)
+
+
+# ==========================================================
+# Person detector contract test - 6P.1
+# ==========================================================
+
+add_executable(
+    test_person_detection_model
+
+    tests/test_person_detection_model.cpp
+)
+
+target_link_libraries(
+    test_person_detection_model
+    PRIVATE
+
+    person_detection_model
+)
+
+
+# ==========================================================
+# Person detector preprocess test - 6P.2
+# ==========================================================
+
+add_executable(
+    test_person_detection_preprocess
+
+    tests/test_person_detection_preprocess.cpp
+)
+
+target_link_libraries(
+    test_person_detection_preprocess
+    PRIVATE
+
+    person_detection_model
+)
+
+
+# ==========================================================
+# Person detector inference test - 6P.3
+# ==========================================================
+
+add_executable(
+    test_person_detection_inference
+
+    tests/test_person_detection_inference.cpp
+)
+
+target_link_libraries(
+    test_person_detection_inference
+    PRIVATE
+
+    person_detection_model
+)
+
+
+# ==========================================================
+# Person detector decode test - 6P.4
+# ==========================================================
+
+add_executable(
+    test_person_detection_decode
+
+    tests/test_person_detection_decode.cpp
+)
+
+target_link_libraries(
+    test_person_detection_decode
+    PRIVATE
+
+    person_detection_model
 )
