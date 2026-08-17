@@ -2,6 +2,7 @@
 
 #include "metrics/metrics_logger.hpp"
 #include "metrics/profiler.hpp"
+#include "pipeline/frame_processor.hpp"
 #include "video/frame_sink.hpp"
 #include "video/frame_source.hpp"
 
@@ -22,7 +23,8 @@ public:
         video::FrameSource& source,
         video::FrameSink& sink,
         metrics::PipelineProfiler* profiler = nullptr,
-        metrics::MetricsLogger* metricsLogger = nullptr
+        metrics::MetricsLogger* metricsLogger = nullptr,
+        FrameProcessor* processor = nullptr
     ) noexcept;
 
     VideoPipeline(
@@ -59,6 +61,9 @@ private:
         nullptr;
 
     metrics::MetricsLogger* metricsLogger_ =
+        nullptr;
+
+    FrameProcessor* processor_ =
         nullptr;
 
     VideoPipelineStats stats_;

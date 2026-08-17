@@ -3,13 +3,16 @@
 #include "metrics/metrics.hpp"
 #include "video/frame.hpp"
 
+#include <vector>
+
 namespace pipeline {
 
 VideoPipeline::VideoPipeline(
     video::FrameSource& source,
     video::FrameSink& sink,
     metrics::PipelineProfiler* profiler,
-    metrics::MetricsLogger* metricsLogger
+    metrics::MetricsLogger* metricsLogger,
+    FrameProcessor* processor
 ) noexcept
     : source_(
           source
@@ -22,6 +25,9 @@ VideoPipeline::VideoPipeline(
       ),
       metricsLogger_(
           metricsLogger
+      ),
+      processor_(
+          processor
       )
 {
 }
@@ -32,10 +38,6 @@ bool VideoPipeline::run()
 
     lastError_.clear();
 
-    // =====================================================
-    // Metrics must already be opened by application.
-    // =====================================================
-
     if (metricsLogger_ != nullptr &&
         !metricsLogger_->isOpen()) {
 
@@ -45,17 +47,13 @@ bool VideoPipeline::run()
         return false;
     }
 
-    // =====================================================
-    // Start profiler
-    // =====================================================
-
     if (profiler_ != nullptr) {
 
         profiler_->startRun();
     }
 
     // =====================================================
-    // Open source
+    // Source
     // =====================================================
 
     if (!source_.open()) {
@@ -66,7 +64,6 @@ bool VideoPipeline::run()
             source_.lastError();
 
         if (profiler_ != nullptr) {
-
             profiler_->finishRun();
         }
 
@@ -74,7 +71,34 @@ bool VideoPipeline::run()
     }
 
     // =====================================================
-    // Open sink
+    // Processor
+    // =====================================================
+
+    if (processor_ != nullptr) {
+
+        if (!processor_->configure(
+                source_.fps(),
+                source_.width(),
+                source_.height()
+            )) {
+
+            lastError_ =
+                "Cannot configure frame processor: "
+                +
+                processor_->lastError();
+
+            source_.close();
+
+            if (profiler_ != nullptr) {
+                profiler_->finishRun();
+            }
+
+            return false;
+        }
+    }
+
+    // =====================================================
+    // Sink
     // =====================================================
 
     if (!sink_.open(
@@ -91,7 +115,6 @@ bool VideoPipeline::run()
         source_.close();
 
         if (profiler_ != nullptr) {
-
             profiler_->finishRun();
         }
 
@@ -108,17 +131,17 @@ bool VideoPipeline::run()
             Clock::now();
 
         // =================================================
-        // READ
+        // READ ORIGINAL FRAME
         // =================================================
 
         const Clock::time_point readStart =
             Clock::now();
 
-        video::Frame frame;
+        video::Frame sourceFrame;
 
         const bool readSuccess =
             source_.read(
-                frame
+                sourceFrame
             );
 
         const Clock::time_point readEnd =
@@ -126,7 +149,6 @@ bool VideoPipeline::run()
 
         if (!readSuccess) {
 
-            // Empty error means normal EOF.
             if (!source_.lastError().empty()) {
 
                 lastError_ =
@@ -135,11 +157,9 @@ bool VideoPipeline::run()
                     source_.lastError();
 
                 sink_.close();
-
                 source_.close();
 
                 if (profiler_ != nullptr) {
-
                     profiler_->finishRun();
                 }
 
@@ -158,25 +178,55 @@ bool VideoPipeline::run()
             );
 
         // =================================================
+        // RENDER FRAME
+        //
+        // Initially references the same original image.
+        //
+        // Model-specific renderDetections() returns a new
+        // rendered Mat when it actually draws something.
+        //
+        // AI models always receive sourceFrame, so later
+        // overlays can never contaminate another model's
+        // input.
+        // =================================================
+
+        video::Frame renderFrame =
+            sourceFrame;
+
+        // =================================================
         // PROCESS
-        //
-        // V2 intentionally has no AI.
-        //
-        // This timing slot becomes:
-        //
-        // scheduler
-        // people
-        // fire/smoke
-        // attendance
-        // renderer
-        //
-        // in later checkpoints.
         // =================================================
 
         const Clock::time_point processStart =
             Clock::now();
 
-        // No processing in V2.
+        std::vector<
+            metrics::ModelMetrics
+        > modelMetrics;
+
+        if (processor_ != nullptr) {
+
+            if (!processor_->process(
+                    sourceFrame,
+                    renderFrame,
+                    modelMetrics
+                )) {
+
+                lastError_ =
+                    "Frame processor failed: "
+                    +
+                    processor_->lastError();
+
+                sink_.close();
+                source_.close();
+
+                if (profiler_ != nullptr) {
+                    profiler_->finishRun();
+                }
+
+                return false;
+            }
+        }
 
         const Clock::time_point processEnd =
             Clock::now();
@@ -188,14 +238,44 @@ bool VideoPipeline::run()
             );
 
         // =================================================
-        // WRITE
+        // MODEL CSV
+        // =================================================
+
+        if (metricsLogger_ != nullptr) {
+
+            for (const auto& metric :
+                 modelMetrics) {
+
+                if (!metricsLogger_->writeModel(
+                        metric
+                    )) {
+
+                    lastError_ =
+                        "Cannot write model metrics: "
+                        +
+                        metricsLogger_->lastError();
+
+                    sink_.close();
+                    source_.close();
+
+                    if (profiler_ != nullptr) {
+                        profiler_->finishRun();
+                    }
+
+                    return false;
+                }
+            }
+        }
+
+        // =================================================
+        // WRITE RENDER FRAME
         // =================================================
 
         const Clock::time_point writeStart =
             Clock::now();
 
         if (!sink_.write(
-                frame
+                renderFrame
             )) {
 
             lastError_ =
@@ -204,11 +284,9 @@ bool VideoPipeline::run()
                 sink_.lastError();
 
             sink_.close();
-
             source_.close();
 
             if (profiler_ != nullptr) {
-
                 profiler_->finishRun();
             }
 
@@ -226,26 +304,23 @@ bool VideoPipeline::run()
                 writeEnd
             );
 
-        const Clock::time_point frameEnd =
-            writeEnd;
-
         const double totalMs =
             durationMs(
                 frameStart,
-                frameEnd
+                writeEnd
             );
 
         // =================================================
-        // Frame metrics
+        // FRAME METRICS
         // =================================================
 
         metrics::FrameMetrics frameMetrics;
 
         frameMetrics.frameId =
-            frame.frameId;
+            sourceFrame.frameId;
 
         frameMetrics.captureTimestampUs =
-            frame.captureTimestampUs;
+            sourceFrame.captureTimestampUs;
 
         frameMetrics.readMs =
             readMs;
@@ -267,20 +342,12 @@ bool VideoPipeline::run()
                 totalMs;
         }
 
-        // =================================================
-        // Profiler
-        // =================================================
-
         if (profiler_ != nullptr) {
 
             profiler_->recordFrame(
                 frameMetrics
             );
         }
-
-        // =================================================
-        // CSV
-        // =================================================
 
         if (metricsLogger_ != nullptr) {
 
@@ -294,11 +361,9 @@ bool VideoPipeline::run()
                     metricsLogger_->lastError();
 
                 sink_.close();
-
                 source_.close();
 
                 if (profiler_ != nullptr) {
-
                     profiler_->finishRun();
                 }
 
@@ -307,7 +372,7 @@ bool VideoPipeline::run()
         }
 
         // =================================================
-        // System sampling
+        // SYSTEM METRICS
         // =================================================
 
         if (profiler_ != nullptr &&
@@ -329,9 +394,7 @@ bool VideoPipeline::run()
                         metricsLogger_->lastError();
 
                     sink_.close();
-
                     source_.close();
-
                     profiler_->finishRun();
 
                     return false;
@@ -340,18 +403,12 @@ bool VideoPipeline::run()
         }
     }
 
-    // =====================================================
-    // Finish
-    // =====================================================
-
     sink_.close();
 
     source_.close();
 
     if (profiler_ != nullptr) {
 
-        // Force one final system sample so short videos
-        // still contain resource information.
         if (metricsLogger_ != nullptr) {
 
             metrics::SystemMetrics finalSystemMetrics;
@@ -402,23 +459,19 @@ bool VideoPipeline::run()
         return false;
     }
 
-    lastError_.clear();
-
     return true;
 }
 
 const VideoPipelineStats&
 VideoPipeline::stats() const noexcept
 {
-    return
-        stats_;
+    return stats_;
 }
 
 const std::string&
 VideoPipeline::lastError() const noexcept
 {
-    return
-        lastError_;
+    return lastError_;
 }
 
 double VideoPipeline::durationMs(

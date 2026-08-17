@@ -58,11 +58,8 @@ bool MetricsLogger::open(
     );
 
     frameFile_.open(
-        root
-        /
-        "frame_metrics.csv",
-        std::ios::out
-        |
+        root / "frame_metrics.csv",
+        std::ios::out |
         std::ios::trunc
     );
 
@@ -77,11 +74,8 @@ bool MetricsLogger::open(
     }
 
     modelFile_.open(
-        root
-        /
-        "model_metrics.csv",
-        std::ios::out
-        |
+        root / "model_metrics.csv",
+        std::ios::out |
         std::ios::trunc
     );
 
@@ -96,11 +90,8 @@ bool MetricsLogger::open(
     }
 
     systemFile_.open(
-        root
-        /
-        "system_metrics.csv",
-        std::ios::out
-        |
+        root / "system_metrics.csv",
+        std::ios::out |
         std::ios::trunc
     );
 
@@ -113,10 +104,6 @@ bool MetricsLogger::open(
 
         return false;
     }
-
-    // =====================================================
-    // Headers
-    // =====================================================
 
     frameFile_
         << "frame_id,"
@@ -135,6 +122,7 @@ bool MetricsLogger::open(
         << "queue_ms,"
         << "inference_ms,"
         << "postprocess_ms,"
+        << "render_ms,"
         << "total_ms,"
         << "result_count"
         << '\n';
@@ -150,25 +138,20 @@ bool MetricsLogger::open(
 
     flush();
 
-    lastError_.clear();
-
     return true;
 }
 
 void MetricsLogger::close()
 {
     if (frameFile_.is_open()) {
-
         frameFile_.close();
     }
 
     if (modelFile_.is_open()) {
-
         modelFile_.close();
     }
 
     if (systemFile_.is_open()) {
-
         systemFile_.close();
     }
 }
@@ -241,6 +224,8 @@ bool MetricsLogger::writeModel(
         << ','
         << metrics.postprocessMs
         << ','
+        << metrics.renderMs
+        << ','
         << metrics.totalMs
         << ','
         << metrics.resultCount
@@ -299,17 +284,14 @@ bool MetricsLogger::writeSystem(
 void MetricsLogger::flush()
 {
     if (frameFile_.is_open()) {
-
         frameFile_.flush();
     }
 
     if (modelFile_.is_open()) {
-
         modelFile_.flush();
     }
 
     if (systemFile_.is_open()) {
-
         systemFile_.flush();
     }
 }

@@ -1,12 +1,15 @@
-#include "config/fire_smoke_config.hpp"
+#include "async_runtime/async_metrics_logger.hpp"
+#include "async_runtime/async_video_pipeline.hpp"
+#include "async_runtime/branch_worker.hpp"
+#include "async_runtime/htp_execution_gate.hpp"
+#include "async_runtime/overlay_result_cache.hpp"
 
 #include "attendance/attendance_event_logger.hpp"
 #include "attendance/face_database.hpp"
 
-#include "inference/qnn_backend.hpp"
+#include "config/fire_smoke_config.hpp"
 
-#include "metrics/metrics_logger.hpp"
-#include "metrics/profiler.hpp"
+#include "inference/qnn_backend.hpp"
 
 #include "models/face_detection_model.hpp"
 #include "models/face_embedding_model.hpp"
@@ -14,19 +17,44 @@
 #include "models/person_detection_model.hpp"
 
 #include "pipeline/attendance_pipeline.hpp"
-#include "pipeline/composite_frame_processor.hpp"
 #include "pipeline/fire_smoke_pipeline.hpp"
 #include "pipeline/person_pipeline.hpp"
-#include "pipeline/video_pipeline.hpp"
 
 #include "video/video_file_sink.hpp"
 #include "video/video_file_source.hpp"
 
 #include <cstdlib>
-#include <exception>
 #include <iomanip>
 #include <iostream>
 #include <string>
+
+namespace {
+
+const char* requiredEnvironment(
+    const char* name
+)
+{
+    const char* value =
+        std::getenv(
+            name
+        );
+
+    if (value == nullptr ||
+        value[0] == '\0') {
+
+        std::cerr
+            << "[ERROR] "
+            << name
+            << " is not set\n";
+
+        return nullptr;
+    }
+
+    return value;
+}
+
+} // namespace
+
 
 int main(
     int argc,
@@ -38,7 +66,6 @@ int main(
 
         std::cerr
             << "Usage:\n"
-            << "  "
             << argv[0]
             << " <input.mp4>"
             << " <output.mp4>"
@@ -60,7 +87,7 @@ int main(
     const std::string metricsDirectory =
         argc >= 4
             ? argv[3]
-            : "logs";
+            : "v8_logs";
 
     double personFps =
         10.0;
@@ -121,44 +148,41 @@ int main(
     // =====================================================
 
     const char* backendPath =
-        std::getenv(
+        requiredEnvironment(
             "QNN_BACKEND_PATH"
         );
 
-    const char* personModelPath =
-        std::getenv(
+    const char* personPath =
+        requiredEnvironment(
             "QNN_PERSON_MODEL_PATH"
         );
 
-    const char* fireSmokeModelPath =
-        std::getenv(
+    const char* fireSmokePath =
+        requiredEnvironment(
             "QNN_FIRE_SMOKE_MODEL_PATH"
         );
 
-    const char* faceDetectorPath =
-        std::getenv(
+    const char* scrfdPath =
+        requiredEnvironment(
             "QNN_FACE_DETECTION_MODEL_PATH"
         );
 
-    const char* faceEmbeddingPath =
-        std::getenv(
+    const char* edgeFacePath =
+        requiredEnvironment(
             "QNN_FACE_EMBEDDING_MODEL_PATH"
         );
 
-    const char* faceDatabasePath =
-        std::getenv(
+    const char* faceDbPath =
+        requiredEnvironment(
             "FACE_DATABASE_PATH"
         );
 
     if (backendPath == nullptr ||
-        personModelPath == nullptr ||
-        fireSmokeModelPath == nullptr ||
-        faceDetectorPath == nullptr ||
-        faceEmbeddingPath == nullptr ||
-        faceDatabasePath == nullptr) {
-
-        std::cerr
-            << "[ERROR] Required environment variables missing\n";
+        personPath == nullptr ||
+        fireSmokePath == nullptr ||
+        scrfdPath == nullptr ||
+        edgeFacePath == nullptr ||
+        faceDbPath == nullptr) {
 
         return EXIT_FAILURE;
     }
@@ -167,12 +191,12 @@ int main(
     // FireSmoke anchors
     // =====================================================
 
-    models::FireSmokeAnchors fireSmokeAnchors;
+    models::FireSmokeAnchors anchors;
 
     std::string anchorError;
 
     if (!config::loadFireSmokeAnchorsFromEnvironment(
-            fireSmokeAnchors,
+            anchors,
             anchorError
         )) {
 
@@ -185,7 +209,7 @@ int main(
     }
 
     // =====================================================
-    // Shared QNN backend
+    // Shared QNN backend / device
     // =====================================================
 
     inference::QnnBackend backend;
@@ -206,9 +230,6 @@ int main(
         return EXIT_FAILURE;
     }
 
-    std::cout
-        << "[PASS] QNN backend ready\n";
-
     // =====================================================
     // Models
     // =====================================================
@@ -218,7 +239,7 @@ int main(
     );
 
     if (!personModel.initialize(
-            personModelPath
+            personPath
         )) {
 
         std::cerr
@@ -229,15 +250,16 @@ int main(
         return EXIT_FAILURE;
     }
 
+
     models::FireSmokeDetectionModel fireSmokeModel(
         backend
     );
 
     if (!fireSmokeModel.initialize(
-            fireSmokeModelPath
+            fireSmokePath
         ) ||
         !fireSmokeModel.setAnchors(
-            fireSmokeAnchors
+            anchors
         )) {
 
         std::cerr
@@ -248,12 +270,13 @@ int main(
         return EXIT_FAILURE;
     }
 
+
     models::FaceDetectionModel faceDetector(
         backend
     );
 
     if (!faceDetector.initialize(
-            faceDetectorPath
+            scrfdPath
         )) {
 
         std::cerr
@@ -264,12 +287,13 @@ int main(
         return EXIT_FAILURE;
     }
 
+
     models::FaceEmbeddingModel faceEmbedding(
         backend
     );
 
     if (!faceEmbedding.initialize(
-            faceEmbeddingPath
+            edgeFacePath
         )) {
 
         std::cerr
@@ -281,13 +305,13 @@ int main(
     }
 
     // =====================================================
-    // Face DB
+    // Face database
     // =====================================================
 
     attendance::FaceDatabase faceDatabase;
 
     if (!faceDatabase.load(
-            faceDatabasePath
+            faceDbPath
         )) {
 
         std::cerr
@@ -298,32 +322,24 @@ int main(
         return EXIT_FAILURE;
     }
 
-    std::cout
-        << "[PASS] Face DB loaded\n"
-        << "[INFO] persons   : "
-        << faceDatabase.personCount()
-        << '\n'
-        << "[INFO] templates : "
-        << faceDatabase.templateCount()
-        << '\n';
-
     // =====================================================
-    // Logs
+    // Logging
     // =====================================================
 
-    metrics::MetricsLogger metricsLogger;
+    async_runtime::AsyncMetricsLogger asyncMetrics;
 
-    if (!metricsLogger.open(
+    if (!asyncMetrics.open(
             metricsDirectory
         )) {
 
         std::cerr
-            << "[ERROR] Metrics logger: "
-            << metricsLogger.lastError()
+            << "[ERROR] Async metrics: "
+            << asyncMetrics.lastError()
             << '\n';
 
         return EXIT_FAILURE;
     }
+
 
     attendance::AttendanceEventLogger attendanceLogger;
 
@@ -341,9 +357,11 @@ int main(
         return EXIT_FAILURE;
     }
 
-    metrics::PipelineProfiler profiler(
-        1000.0
-    );
+    // =====================================================
+    // Shared HTP gate
+    // =====================================================
+
+    async_runtime::HtpExecutionGate htpGate;
 
     // =====================================================
     // Business pipelines
@@ -354,12 +372,22 @@ int main(
         personFps
     );
 
+    personPipeline.setHtpExecutionGate(
+        &htpGate
+    );
+
+
     pipeline::FireSmokePipeline fireSmokePipeline(
         fireSmokeModel,
         fireSmokeFps,
         5,
         3
     );
+
+    fireSmokePipeline.setHtpExecutionGate(
+        &htpGate
+    );
+
 
     pipeline::AttendancePipeline attendancePipeline(
         faceDetector,
@@ -374,22 +402,50 @@ int main(
         1.0
     );
 
-    pipeline::CompositeFrameProcessor composite;
-
-    composite.addProcessor(
-        personPipeline
-    );
-
-    composite.addProcessor(
-        fireSmokePipeline
-    );
-
-    composite.addProcessor(
-        attendancePipeline
+    attendancePipeline.setHtpExecutionGate(
+        &htpGate
     );
 
     // =====================================================
-    // Video
+    // Result caches
+    // =====================================================
+
+    async_runtime::OverlayResultCache personCache;
+
+    async_runtime::OverlayResultCache fireSmokeCache;
+
+    async_runtime::OverlayResultCache attendanceCache;
+
+    // =====================================================
+    // Workers
+    // =====================================================
+
+    async_runtime::BranchWorker personWorker(
+        "person",
+        personPipeline,
+        personCache,
+        asyncMetrics,
+        2
+    );
+
+    async_runtime::BranchWorker fireSmokeWorker(
+        "firesmoke",
+        fireSmokePipeline,
+        fireSmokeCache,
+        asyncMetrics,
+        2
+    );
+
+    async_runtime::BranchWorker attendanceWorker(
+        "attendance",
+        attendancePipeline,
+        attendanceCache,
+        asyncMetrics,
+        2
+    );
+
+    // =====================================================
+    // Video I/O
     // =====================================================
 
     video::VideoFileSource source(
@@ -400,24 +456,45 @@ int main(
         outputPath
     );
 
-    pipeline::VideoPipeline pipeline(
+    async_runtime::AsyncVideoPipeline pipeline(
         source,
         sink,
-        &profiler,
-        &metricsLogger,
-        &composite
+        asyncMetrics,
+        2
+    );
+
+    pipeline.addWorker(
+        personWorker
+    );
+
+    pipeline.addWorker(
+        fireSmokeWorker
+    );
+
+    pipeline.addWorker(
+        attendanceWorker
+    );
+
+    pipeline.setPersonResultCache(
+        &personCache
+    );
+
+    pipeline.setFireSmokeResultCache(
+        &fireSmokeCache
+    );
+
+    pipeline.setAttendanceResultCache(
+        &attendanceCache
     );
 
     std::cout
         << "========================================\n"
-        << "QCS6490 VIDEO PIPELINE - V6\n"
+        << "QCS6490 VIDEO PIPELINE - V8 ASYNC\n"
         << "========================================\n"
-        << "Input              : "
-        << inputPath
-        << '\n'
-        << "Output             : "
-        << outputPath
-        << '\n'
+        << "Execution          : async\n"
+        << "Scheduling         : latest-frame/drop-old\n"
+        << "Queue capacity     : 2\n"
+        << "HTP mode           : serialized shared gate\n"
         << "Person FPS         : "
         << personFps
         << '\n'
@@ -427,19 +504,18 @@ int main(
         << "SCRFD FPS          : "
         << scrfdFps
         << '\n'
-        << "Face threshold     : "
-        << faceThreshold
-        << '\n'
-        << "Face tracking      : IoU association\n"
         << "Identity cache     : enabled\n"
-        << "Unknown retry      : 1.0 sec\n"
-        << "Runtime            : sequential baseline\n"
+        << "Input pacing       : realtime\n"
         << "========================================\n";
+
+    // =====================================================
+    // RUN
+    // =====================================================
 
     if (!pipeline.run()) {
 
         std::cerr
-            << "[ERROR] Pipeline: "
+            << "[ERROR] V8 pipeline: "
             << pipeline.lastError()
             << '\n';
 
@@ -448,10 +524,32 @@ int main(
 
     attendanceLogger.close();
 
-    metricsLogger.close();
+    asyncMetrics.close();
 
-    const metrics::PipelineSummary summary =
-        profiler.summary();
+    const auto htpStats =
+        htpGate.stats();
+
+    const double averageHtpWait =
+        htpStats.executionCount > 0
+            ?
+            htpStats.totalWaitMs
+            /
+            static_cast<double>(
+                htpStats.executionCount
+            )
+            :
+            0.0;
+
+    const double averageHtpExecution =
+        htpStats.executionCount > 0
+            ?
+            htpStats.totalExecutionMs
+            /
+            static_cast<double>(
+                htpStats.executionCount
+            )
+            :
+            0.0;
 
     std::cout
         << std::fixed
@@ -459,74 +557,96 @@ int main(
 
     std::cout
         << "\n========================================\n"
-        << "VIDEO PIPELINE SUMMARY - V6\n"
+        << "VIDEO PIPELINE SUMMARY - V8\n"
         << "========================================\n"
-        << "Frames               : "
-        << summary.frameCount
+        << "Captured frames        : "
+        << pipeline.capturedFrames()
         << '\n'
-        << "Person inferences    : "
+        << "Output frames          : "
+        << pipeline.outputFrames()
+        << '\n'
+        << "Render dropped         : "
+        << pipeline.droppedRenderFrames()
+        << '\n'
+        << '\n'
+        << "Person worker\n"
+        << "----------------------------------------\n"
+        << "Processed              : "
+        << personWorker.processedCount()
+        << '\n'
+        << "Dropped                : "
+        << personWorker.droppedCount()
+        << '\n'
+        << "Max queue depth        : "
+        << personWorker.maxQueueDepth()
+        << '\n'
+        << '\n'
+        << "FireSmoke worker\n"
+        << "----------------------------------------\n"
+        << "Processed              : "
+        << fireSmokeWorker.processedCount()
+        << '\n'
+        << "Dropped                : "
+        << fireSmokeWorker.droppedCount()
+        << '\n'
+        << "Max queue depth        : "
+        << fireSmokeWorker.maxQueueDepth()
+        << '\n'
+        << '\n'
+        << "Attendance worker\n"
+        << "----------------------------------------\n"
+        << "Processed              : "
+        << attendanceWorker.processedCount()
+        << '\n'
+        << "Dropped                : "
+        << attendanceWorker.droppedCount()
+        << '\n'
+        << "Max queue depth        : "
+        << attendanceWorker.maxQueueDepth()
+        << '\n'
+        << '\n'
+        << "Model inference counts\n"
+        << "----------------------------------------\n"
+        << "Person                 : "
         << personPipeline.inferenceCount()
         << '\n'
-        << "FireSmoke inferences : "
+        << "FireSmoke              : "
         << fireSmokePipeline.inferenceCount()
         << '\n'
-        << "SCRFD inferences     : "
+        << "SCRFD                   : "
         << attendancePipeline.detectorInferenceCount()
         << '\n'
-        << "EdgeFace inferences  : "
+        << "EdgeFace                : "
         << attendancePipeline.embeddingInferenceCount()
         << '\n'
-        << "EdgeFace cache hits  : "
+        << "EdgeFace cache hits     : "
         << attendancePipeline.embeddingCacheHitCount()
         << '\n'
-        << "Face tracks created  : "
-        << attendancePipeline.totalFaceTracksCreated()
         << '\n'
-        << "Active face tracks   : "
-        << attendancePipeline.activeFaceTrackCount()
-        << '\n'
-        << "Recognitions         : "
-        << attendancePipeline.recognitionCount()
-        << '\n'
-        << "Attendance events    : "
-        << attendancePipeline.attendanceEventCount()
-        << '\n'
-        << "Runtime              : "
-        << summary.runtimeMs
-        << " ms\n"
-        << "Effective FPS        : "
-        << summary.effectiveFps
-        << '\n'
-        << '\n'
-        << "Average latency\n"
+        << "HTP execution gate\n"
         << "----------------------------------------\n"
-        << "Read                 : "
-        << summary.averageReadMs
+        << "Executions              : "
+        << htpStats.executionCount
+        << '\n'
+        << "Average HTP wait        : "
+        << averageHtpWait
         << " ms\n"
-        << "Process              : "
-        << summary.averageProcessMs
+        << "Maximum HTP wait        : "
+        << htpStats.maxWaitMs
         << " ms\n"
-        << "Write                : "
-        << summary.averageWriteMs
+        << "Average HTP inference   : "
+        << averageHtpExecution
         << " ms\n"
-        << "Total                : "
-        << summary.averageTotalMs
+        << "Maximum HTP inference   : "
+        << htpStats.maxExecutionMs
         << " ms\n"
         << '\n'
-        << "Frame latency\n"
+        << "Metrics\n"
         << "----------------------------------------\n"
-        << "P50                  : "
-        << summary.p50TotalMs
-        << " ms\n"
-        << "P95                  : "
-        << summary.p95TotalMs
-        << " ms\n"
-        << "P99                  : "
-        << summary.p99TotalMs
-        << " ms\n"
-        << "MAX                  : "
-        << summary.maxTotalMs
-        << " ms\n"
+        << metricsDirectory
+        << "/async_frame_metrics.csv\n"
+        << metricsDirectory
+        << "/async_model_metrics.csv\n"
         << "========================================\n";
 
     return EXIT_SUCCESS;

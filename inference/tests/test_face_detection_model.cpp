@@ -105,7 +105,7 @@ int main()
 
     const char* modelPath =
         std::getenv(
-            "QNN_MODEL_PATH"
+            "QNN_FACE_DETECTION_MODEL_PATH"
         );
 
     if (backendPath == nullptr) {
@@ -119,7 +119,7 @@ int main()
     if (modelPath == nullptr) {
 
         std::cerr
-            << "[ERROR] QNN_MODEL_PATH is not set\n";
+            << "[ERROR] QNN_FACE_DETECTION_MODEL_PATH is not set\n";
 
         return 1;
     }
